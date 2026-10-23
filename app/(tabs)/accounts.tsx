@@ -21,6 +21,7 @@ import { AddWalletModal } from '../../components/AddWalletModal';
 import { BankAccountCard } from '../../components/BankAccountCard';
 import { ConnectBankModal } from '../../components/ConnectBankModal';
 import { ExchangeAccountCard } from '../../components/ExchangeAccountCard';
+import { AppleCardImportSheet } from '../../components/AppleCardImportSheet';
 import {
   apiClient,
   ApiError,
@@ -140,7 +141,7 @@ export default function AccountsScreen() {
 
   // Bank net worth: assets minus debts (credit cards / loans).
   const bankNet = bankAccounts.reduce((sum, a) => {
-    if (a.current_balance == null) return sum;
+    if (a.current_balance == null || a.on_budget === false) return sum;
     const isDebt = a.account_type === 'credit_card' || a.account_type === 'loan';
     return sum + (isDebt ? -Math.abs(a.current_balance) : a.current_balance);
   }, 0);
@@ -360,17 +361,35 @@ function BankSection({
     );
   }
 
+  // Breakdown so the headline is obvious: cash in the bank minus what's owed
+  // on cards. Coinbase / investments are deliberately NOT included here.
+  let cashTotal = 0;
+  let owedTotal = 0;
+  for (const a of accounts) {
+    if (a.current_balance == null || a.on_budget === false) continue;
+    const isDebt = a.account_type === 'credit_card' || a.account_type === 'loan';
+    if (isDebt) owedTotal += Math.abs(a.current_balance);
+    else cashTotal += a.current_balance;
+  }
+  // SimpleFIN refreshes from the banks about once a day; show how old the
+  // bank's numbers actually are, not just when we asked.
+  const asOfTimes = accounts
+    .filter((a) => a.provider !== 'apple_card' && a.balance_as_of)
+    .map((a) => new Date(a.balance_as_of!).getTime());
+  const oldestAsOf = asOfTimes.length ? new Date(Math.min(...asOfTimes)) : null;
+
   return (
     <View style={{ gap: spacing.sm }}>
       <View style={styles.bankSummary}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.summaryLabel}>BANK NET WORTH</Text>
+          <Text style={styles.summaryLabel}>CASH MINUS CARDS</Text>
           <Text style={styles.summaryValue}>{formatPrice(netWorth)}</Text>
           <Text style={styles.summaryHint}>
-            {accounts.length} account{accounts.length === 1 ? '' : 's'} via SimpleFIN
-            {connection?.last_synced_at
-              ? ` · synced ${syncedAgo(connection.last_synced_at)}`
-              : ''}
+            {formatPrice(cashTotal)} cash − {formatPrice(owedTotal)} owed on cards
+          </Text>
+          <Text style={styles.summaryHint}>
+            {oldestAsOf ? `Bank data as of ${formatAsOf(oldestAsOf)}` : `${accounts.length} accounts`}
+            {connection?.last_synced_at ? ` · synced ${syncedAgo(connection.last_synced_at)}` : ''}
           </Text>
         </View>
         <View style={{ gap: 6 }}>
@@ -404,8 +423,46 @@ function BankSection({
       {accounts.map((a) => (
         <BankAccountCard key={a.id} account={a} />
       ))}
+      <AppleCardImportButton hasAppleCard={accounts.some((a) => a.provider === 'apple_card')} />
     </View>
   );
+}
+
+function AppleCardImportButton({ hasAppleCard }: { hasAppleCard: boolean }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Pressable
+        onPress={() => setOpen(true)}
+        style={({ pressed }) => [styles.appleImportBtn, pressed && { opacity: 0.7 }]}
+      >
+        <Ionicons name="logo-apple" size={16} color={colors.text} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.appleImportTitle}>{hasAppleCard ? 'Update Apple Card' : 'Add Apple Card'}</Text>
+          <Text style={styles.appleImportDesc}>
+            {hasAppleCard
+              ? 'Import a fresh export from Wallet to bring it up to date'
+              : "Apple Card can't link through SimpleFIN. Import its export instead."}
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+      </Pressable>
+      <AppleCardImportSheet
+        visible={open}
+        onClose={() => setOpen(false)}
+        onImported={() => {
+          for (const k of ['bank-accounts', 'transactions', 'budget', 'overview', 'bills']) {
+            void queryClient.invalidateQueries({ queryKey: [k] });
+          }
+        }}
+      />
+    </>
+  );
+}
+
+function formatAsOf(d: Date): string {
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 function syncedAgo(iso: string): string {
@@ -646,4 +703,18 @@ const styles = StyleSheet.create({
   },
   errorStripText: { ...type.micro, color: colors.warning, flex: 1, fontSize: 11 },
   emptyScroll: { paddingHorizontal: spacing.xl, paddingBottom: spacing.xxl, gap: spacing.lg },
+  appleImportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: colors.border,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  appleImportTitle: { ...type.caption, color: colors.text, fontWeight: '600' },
+  appleImportDesc: { ...type.micro, color: colors.textDim, marginTop: 2 },
 });

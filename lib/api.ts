@@ -409,6 +409,10 @@ export interface BankAccount {
   last_synced_at: string | null;
   /** Off-budget accounts (brokerage, loans) are tracked for net worth only. */
   on_budget?: boolean;
+  /** When the bank's numbers are actually from (SimpleFIN refreshes ~daily). */
+  balance_as_of?: string | null;
+  /** 'simplefin' or 'apple_card' (CSV import). */
+  provider?: string;
 }
 
 export interface BankTransaction {
@@ -727,6 +731,17 @@ export const apiClient = {
       `/api/transactions/${id}`,
       { method: 'PATCH', body: input },
     ),
+  importAppleCard: (csv: string, balance_owed?: number) =>
+    api<{
+      ok: true;
+      rows: number;
+      inserted: number;
+      updated: number;
+      skipped: number;
+      from?: string;
+      to?: string;
+      processed: ProcessResult;
+    }>('/api/banking/import/apple-card', { method: 'POST', body: { csv, balance_owed } }),
   setAccountOnBudget: (id: string, on_budget: boolean) =>
     api<{ ok: true }>(`/api/banking/accounts/${id}`, { method: 'PATCH', body: { on_budget } }),
 
