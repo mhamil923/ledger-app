@@ -896,6 +896,8 @@ export interface Overview {
     spent_this_month: number;
     uncategorized_count: number;
     moved_to_trading_this_month: number;
+    investing_envelope_available: number | null;
+    investing_envelope_budgeted: number | null;
   };
   trading: {
     capital_in_trades: number;

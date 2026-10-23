@@ -19,6 +19,7 @@ import { WatchlistRow } from '../../components/WatchlistRow';
 import { AddAssetModal } from '../../components/AddAssetModal';
 import { AnalysisModal } from '../../components/AnalysisModal';
 import { LivePulse } from '../../components/LivePulse';
+import { MoneyTradingCard } from '../../components/MoneyTradingCard';
 import { apiClient, type WatchlistItem } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { colors, radius, spacing, type } from '../../theme/colors';
@@ -167,6 +168,7 @@ export default function WatchlistScreen() {
           data={buildFlatSections(items)}
           keyExtractor={(row) => (row.kind === 'header' ? `h-${row.label}` : row.item.id)}
           contentContainerStyle={styles.listContent}
+          ListHeaderComponent={<MoneyTradingCard />}
           renderItem={({ item, index }) => {
             if (item.kind === 'header') {
               return (
