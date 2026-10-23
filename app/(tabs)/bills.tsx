@@ -172,7 +172,17 @@ export default function BillsScreen() {
             }
             return (
               <View style={styles.billWrap}>
-                <BillRow bill={item.bill} onMarkPaid={handleMarkPaid} onDelete={handleDelete} />
+                <BillRow
+                  bill={item.bill}
+                  onMarkPaid={handleMarkPaid}
+                  onDelete={handleDelete}
+                  onUseLatestAmount={(bill, amount) => {
+                    void apiClient.updateBill(bill.id, { amount }).then(() => {
+                      void queryClient.invalidateQueries({ queryKey: ['bills'] });
+                      void queryClient.invalidateQueries({ queryKey: ['budget'] });
+                    });
+                  }}
+                />
               </View>
             );
           }}

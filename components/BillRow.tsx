@@ -8,6 +8,8 @@ interface Props {
   bill: Bill;
   onMarkPaid: (bill: Bill) => void;
   onDelete: (bill: Bill) => void;
+  /** Update the bill's amount to its latest real charge. */
+  onUseLatestAmount?: (bill: Bill, amount: number) => void;
 }
 
 const CADENCE_LABEL: Record<string, string> = {
@@ -36,7 +38,7 @@ function dueLabel(days: number | null): { text: string; color: string } {
   return { text: `Due in ${days}d`, color: colors.textMuted };
 }
 
-export function BillRow({ bill, onMarkPaid, onDelete }: Props) {
+export function BillRow({ bill, onMarkPaid, onDelete, onUseLatestAmount }: Props) {
   const days = daysUntil(bill.next_due_date);
   const due = dueLabel(days);
 
@@ -52,6 +54,24 @@ export function BillRow({ bill, onMarkPaid, onDelete }: Props) {
           </View>
           <Text style={styles.amount}>{formatPrice(bill.amount)}</Text>
         </View>
+        {bill.amount_changed && bill.last_charge_amount != null ? (
+          <View style={styles.changeBox}>
+            <Ionicons name="alert-circle-outline" size={14} color={colors.warning} />
+            <Text style={styles.changeText}>
+              Last charge was {formatPrice(bill.last_charge_amount)}
+              {bill.last_charge_date ? ` on ${new Date(`${bill.last_charge_date}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}
+            </Text>
+            {onUseLatestAmount ? (
+              <Pressable
+                onPress={() => onUseLatestAmount(bill, bill.last_charge_amount!)}
+                hitSlop={6}
+                style={({ pressed }) => [styles.changeBtn, pressed && { opacity: 0.7 }]}
+              >
+                <Text style={styles.changeBtnText}>Update</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
         <View style={styles.bottomRow}>
           <View style={styles.metaBlock}>
             <Text style={styles.cadence}>{CADENCE_LABEL[bill.cadence] ?? bill.cadence}</Text>
@@ -117,4 +137,18 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(34, 197, 94, 0.3)',
   },
   payText: { ...type.micro, color: colors.positive, fontWeight: '700' },
+  changeBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+  },
+  changeText: { ...type.micro, color: colors.text, flex: 1 },
+  changeBtn: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.sm, backgroundColor: colors.warning },
+  changeBtnText: { ...type.micro, color: colors.bg, fontWeight: '700' },
 });

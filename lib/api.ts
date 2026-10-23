@@ -783,6 +783,10 @@ export interface Bill {
   monthly_equivalent: number;
   last_paid_at: string | null;
   total_paid: number;
+  last_charge_amount?: number | null;
+  last_charge_date?: string | null;
+  /** Latest charge differs from the saved amount (e.g. utilities added to rent). */
+  amount_changed?: boolean;
 }
 
 export interface BudgetSettings {
