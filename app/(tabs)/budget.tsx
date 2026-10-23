@@ -1,8 +1,6 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -12,18 +10,15 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { AddBudgetCategoryModal } from '../../components/AddBudgetCategoryModal';
-import { BudgetCategoryRow } from '../../components/BudgetCategoryRow';
-import {
-  apiClient,
-  type BudgetCategory,
-  type BudgetResponse,
-} from '../../lib/api';
-import { formatPrice } from '../../lib/format';
+import { BudgetCategoryRow, formatMoney } from '../../components/BudgetCategoryRow';
+import { CategoryActionsSheet } from '../../components/CategoryActionsSheet';
+import { Sheet, sheetStyles } from '../../components/Sheet';
+import { apiClient, type EnvelopeBudget, type EnvelopeCategory } from '../../lib/api';
 import { colors, radius, spacing, type } from '../../theme/colors';
 
 function currentMonth(): string {
@@ -37,30 +32,23 @@ function shiftMonth(month: string, delta: number): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-function displayMonth(month: string): string {
+function displayMonth(month: string, opts: Intl.DateTimeFormatOptions = { month: 'long', year: 'numeric' }): string {
   const [y, m] = month.split('-').map(Number);
-  return new Date(Date.UTC(y!, m! - 1, 1)).toLocaleDateString('en-US', {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
+  return new Date(Date.UTC(y!, m! - 1, 1)).toLocaleDateString('en-US', { ...opts, timeZone: 'UTC' });
 }
 
 export default function BudgetScreen() {
   const queryClient = useQueryClient();
   const [month, setMonth] = useState(currentMonth());
-  const [addOpen, setAddOpen] = useState(false);
-  const [editing, setEditing] = useState<BudgetCategory | null>(null);
-  const [incomeDraft, setIncomeDraft] = useState<string>('');
-  const [savingsDraft, setSavingsDraft] = useState<string>('');
+  const [selected, setSelected] = useState<EnvelopeCategory | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editing, setEditing] = useState<EnvelopeCategory | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const budgetQuery = useQuery<BudgetResponse>({
+  const budgetQuery = useQuery<EnvelopeBudget>({
     queryKey: ['budget', month],
     queryFn: () => apiClient.getBudget(month),
   });
-
-  // Only refetch on focus using stable refetch reference (avoids the infinite
-  // loop bug the other tabs had before).
   const refetchBudget = budgetQuery.refetch;
   useFocusEffect(
     useCallback(() => {
@@ -68,109 +56,70 @@ export default function BudgetScreen() {
     }, [refetchBudget]),
   );
 
-  const budget = budgetQuery.data?.budget ?? null;
-  const categories = budgetQuery.data?.categories ?? [];
-  const actuals = budgetQuery.data?.actuals ?? null;
-  const summary = budgetQuery.data?.summary ?? null;
-
-  // Sync the editable income/savings inputs whenever the fetched budget
-  // changes (month switch, initial load), but not while the user is typing
-  // — that's handled by explicit blur/submit.
-  useMemo(() => {
-    if (!budget) return;
-    setIncomeDraft(String(budget.monthly_income || ''));
-    setSavingsDraft(String(budget.savings_target || ''));
-  }, [budget]);
-
-  const updateBudgetMutation = useMutation({
-    mutationFn: (input: { monthly_income?: number; savings_target?: number }) =>
-      apiClient.updateBudget(budget!.id, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['budget', month] }),
-  });
-
-  const addCategoryMutation = useMutation({
-    mutationFn: (input: {
-      name: string;
-      monthly_limit: number;
-      match_patterns?: string[];
-    }) => apiClient.addBudgetCategory(budget!.id, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['budget', month] }),
-  });
-
-  const updateCategoryMutation = useMutation({
-    mutationFn: (input: {
-      id: string;
-      patch: { name?: string; monthly_limit?: number; match_patterns?: string[] };
-    }) => apiClient.updateBudgetCategory(budget!.id, input.id, input.patch),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['budget', month] }),
-  });
-
-  const deleteCategoryMutation = useMutation({
-    mutationFn: (categoryId: string) =>
-      apiClient.deleteBudgetCategory(budget!.id, categoryId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['budget', month] }),
-  });
-
-  const commitIncome = (): void => {
-    if (!budget) return;
-    const n = Number(incomeDraft);
-    if (!Number.isFinite(n) || n < 0) return;
-    if (n === budget.monthly_income) return;
-    updateBudgetMutation.mutate({ monthly_income: n });
+  const applyBudget = (next: EnvelopeBudget): void => {
+    queryClient.setQueryData(['budget', next.month], next);
+    // Later months depend on this one (rollover), so drop them from cache.
+    void queryClient.invalidateQueries({
+      predicate: (q) => q.queryKey[0] === 'budget' && String(q.queryKey[1]) > next.month,
+    });
+    void queryClient.invalidateQueries({ queryKey: ['overview'] });
+  };
+  const refreshAll = (): void => {
+    void queryClient.invalidateQueries({ queryKey: ['budget'] });
+    void queryClient.invalidateQueries({ queryKey: ['overview'] });
   };
 
-  const commitSavings = (): void => {
-    if (!budget) return;
-    const n = Number(savingsDraft);
-    if (!Number.isFinite(n) || n < 0) return;
-    if (n === budget.savings_target) return;
-    updateBudgetMutation.mutate({ savings_target: n });
-  };
+  const copyMutation = useMutation({
+    mutationFn: () => apiClient.copyLastMonth(month),
+    onSuccess: applyBudget,
+  });
+  const fundBillsMutation = useMutation({
+    mutationFn: () => apiClient.fundBills(month),
+    onSuccess: applyBudget,
+  });
+  const startHereMutation = useMutation({
+    mutationFn: () => apiClient.updateBudgetSettings({ start_month: month }),
+    onSuccess: refreshAll,
+  });
 
-  const handleDelete = (cat: BudgetCategory): void => {
-    const message = `Delete "${cat.name}"? Its spending won't be re-counted anywhere until you add a new category with matching patterns.`;
-    const proceed = (): void => deleteCategoryMutation.mutate(cat.id);
-    if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && window.confirm(message)) proceed();
-      return;
-    }
-    Alert.alert('Delete category?', message, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: proceed },
-    ]);
-  };
+  const data = budgetQuery.data;
+  const allGroups = data?.groups.map((g) => g.name) ?? [];
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <ScreenHeader
-        eyebrow="LAYER 6"
+        eyebrow="ENVELOPES"
         title="Budget"
         subtitle={displayMonth(month)}
-        rightIcon="add"
-        onRightPress={() => {
-          setEditing(null);
-          setAddOpen(true);
-        }}
+        actions={[
+          { icon: 'options-outline', onPress: () => setSettingsOpen(true), accessibilityLabel: 'Budget settings' },
+          {
+            icon: 'add',
+            onPress: () => {
+              setEditing(null);
+              setEditorOpen(true);
+            },
+            accessibilityLabel: 'Add category',
+          },
+        ]}
       />
 
       {budgetQuery.isLoading ? (
         <View style={styles.center}>
           <ActivityIndicator color={colors.accent} />
         </View>
-      ) : budgetQuery.isError ? (
+      ) : budgetQuery.isError || !data ? (
         <View style={styles.empty}>
           <Ionicons name="cloud-offline-outline" size={32} color={colors.textMuted} />
           <Text style={styles.emptyTitle}>Couldn't load budget</Text>
           <Text style={styles.emptyDesc}>
-            {budgetQuery.error instanceof Error
-              ? budgetQuery.error.message
-              : 'Unknown error'}
+            {budgetQuery.error instanceof Error ? budgetQuery.error.message : 'Unknown error'}
           </Text>
           <Pressable onPress={() => void budgetQuery.refetch()} style={styles.retryBtn}>
             <Text style={styles.retryBtnText}>Retry</Text>
           </Pressable>
         </View>
-      ) : summary && budget && actuals ? (
+      ) : (
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           refreshControl={
@@ -181,291 +130,280 @@ export default function BudgetScreen() {
             />
           }
         >
-          {/* Month chips */}
           <View style={styles.monthRow}>
-            <Pressable
-              onPress={() => setMonth(shiftMonth(month, -1))}
-              style={({ pressed }) => [
-                styles.monthBtn,
-                pressed && { opacity: 0.6 },
-              ]}
-            >
-              <Ionicons name="chevron-back" size={16} color={colors.text} />
-              <Text style={styles.monthBtnText}>{displayMonth(shiftMonth(month, -1))}</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setMonth(currentMonth())}
-              disabled={month === currentMonth()}
-              style={({ pressed }) => [
-                styles.monthBtn,
-                month === currentMonth() && styles.monthBtnActive,
-                pressed && { opacity: 0.6 },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.monthBtnText,
-                  month === currentMonth() && styles.monthBtnActiveText,
-                ]}
-              >
-                This Month
+            <MonthBtn label={displayMonth(shiftMonth(month, -1), { month: 'short' })} icon="chevron-back" onPress={() => setMonth(shiftMonth(month, -1))} />
+            <MonthBtn label="This Month" active={month === currentMonth()} onPress={() => setMonth(currentMonth())} />
+            <MonthBtn label={displayMonth(shiftMonth(month, 1), { month: 'short' })} iconRight="chevron-forward" onPress={() => setMonth(shiftMonth(month, 1))} />
+          </View>
+
+          {data.before_start ? (
+            <View style={styles.noticeCard}>
+              <Text style={styles.noticeTitle}>Before your budget starts</Text>
+              <Text style={styles.noticeDesc}>
+                Your envelopes start in {displayMonth(data.start_month)}. Start here instead to include this month's income and spending.
               </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setMonth(shiftMonth(month, 1))}
-              style={({ pressed }) => [
-                styles.monthBtn,
-                pressed && { opacity: 0.6 },
-              ]}
-            >
-              <Text style={styles.monthBtnText}>{displayMonth(shiftMonth(month, 1))}</Text>
-              <Ionicons name="chevron-forward" size={16} color={colors.text} />
-            </Pressable>
-          </View>
-
-          {/* Big summary card */}
-          <View style={styles.summaryCard}>
-            <Text style={styles.summaryLabel}>LEFT TO SAVE</Text>
-            <Text
-              style={[
-                styles.summaryValue,
-                summary.projected_savings < 0 && { color: colors.negative },
-              ]}
-            >
-              {formatPrice(summary.projected_savings)}
-            </Text>
-            <Text style={styles.summaryHint}>
-              Income {formatPrice(summary.income)} − Spent {formatPrice(summary.total_spent)}
-              {summary.savings_target > 0
-                ? ` · Target ${formatPrice(summary.savings_target)}`
-                : ''}
-            </Text>
-
-            <View style={styles.subGrid}>
-              <SubStat
-                label="Income actual"
-                value={summary.total_income_actual}
-                positive
-              />
-              <SubStat
-                label="Fixed bills"
-                value={summary.total_fixed_planned}
-              />
-              <SubStat
-                label="Room to budget"
-                value={summary.remaining_to_budget}
-                warn={summary.remaining_to_budget < 0}
-              />
-            </View>
-            {summary.transfers_excluded > 0 ? (
-              <Text style={styles.transferNote}>
-                Excluded {formatPrice(summary.transfers_excluded)} of credit-card payments
-                and transfers — those aren't real spending.
-              </Text>
-            ) : null}
-          </View>
-
-          {/* Fixed expenses (from Bills) */}
-          {actuals.fixed_expenses.length > 0 ? (
-            <>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>FIXED EXPENSES</Text>
-                <Text style={styles.sectionSubtitle}>
-                  {formatPrice(summary.total_fixed_spent)} of {formatPrice(summary.total_fixed_planned)}
-                </Text>
-              </View>
-              <View style={styles.categoriesList}>
-                {actuals.fixed_expenses.map((fx) => {
-                  const pct =
-                    fx.monthly_equivalent > 0
-                      ? fx.spent_this_month / fx.monthly_equivalent
-                      : 0;
-                  const clamped = Math.max(0, Math.min(1, pct));
-                  const barColor =
-                    pct > 1
-                      ? colors.negative
-                      : fx.spent_this_month > 0
-                        ? colors.positive
-                        : colors.textMuted;
-                  return (
-                    <View key={fx.id} style={styles.fixedRow}>
-                      <View style={styles.fixedHeader}>
-                        <Text style={styles.fixedName} numberOfLines={1}>
-                          {fx.name}
-                        </Text>
-                        <Text style={styles.fixedCadence}>{fx.cadence}</Text>
-                      </View>
-                      <View style={styles.fixedAmounts}>
-                        <Text style={styles.fixedSpent}>
-                          {formatPrice(fx.spent_this_month)}
-                        </Text>
-                        <Text style={styles.fixedLimit}>
-                          of {formatPrice(fx.monthly_equivalent)}/mo
-                        </Text>
-                        <View style={{ flex: 1 }} />
-                        <Text style={[styles.fixedPct, { color: barColor }]}>
-                          {fx.spent_this_month > 0 ? '✓' : 'not yet'}
-                        </Text>
-                      </View>
-                      <View style={styles.barBg}>
-                        <View
-                          style={[
-                            styles.barFill,
-                            {
-                              width: `${clamped * 100}%`,
-                              backgroundColor: barColor,
-                            },
-                          ]}
-                        />
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            </>
-          ) : null}
-
-          {/* Income / savings target inputs */}
-          <View style={styles.inputRow}>
-            <View style={styles.inputBlock}>
-              <Text style={styles.inputLabel}>MONTHLY INCOME</Text>
-              <View style={styles.currencyInputWrap}>
-                <Text style={styles.currencyPrefix}>$</Text>
-                <TextInput
-                  value={incomeDraft}
-                  onChangeText={setIncomeDraft}
-                  onBlur={commitIncome}
-                  onSubmitEditing={commitIncome}
-                  placeholder="0"
-                  placeholderTextColor={colors.textDim}
-                  keyboardType="decimal-pad"
-                  style={styles.currencyInput}
-                />
-              </View>
-            </View>
-            <View style={styles.inputBlock}>
-              <Text style={styles.inputLabel}>SAVINGS TARGET</Text>
-              <View style={styles.currencyInputWrap}>
-                <Text style={styles.currencyPrefix}>$</Text>
-                <TextInput
-                  value={savingsDraft}
-                  onChangeText={setSavingsDraft}
-                  onBlur={commitSavings}
-                  onSubmitEditing={commitSavings}
-                  placeholder="0"
-                  placeholderTextColor={colors.textDim}
-                  keyboardType="decimal-pad"
-                  style={styles.currencyInput}
-                />
-              </View>
-            </View>
-          </View>
-
-          {/* Variable categories (user-defined) */}
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>VARIABLE CATEGORIES</Text>
-            <Pressable
-              onPress={() => {
-                setEditing(null);
-                setAddOpen(true);
-              }}
-              style={({ pressed }) => [
-                styles.addCategoryBtn,
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Ionicons name="add" size={14} color={colors.accent} />
-              <Text style={styles.addCategoryText}>Add category</Text>
-            </Pressable>
-          </View>
-
-          {categories.length === 0 ? (
-            <View style={styles.emptyCategoriesCard}>
-              <Ionicons name="pie-chart-outline" size={24} color={colors.textMuted} />
-              <Text style={styles.emptyCategoriesTitle}>No categories yet</Text>
-              <Text style={styles.emptyCategoriesDesc}>
-                Add categories like "Groceries", "Gas", "Restaurants" with monthly limits and
-                merchant patterns. Your synced transactions will be matched to categories
-                automatically.
-              </Text>
+              <Pressable onPress={() => startHereMutation.mutate()} style={styles.smallBtn}>
+                <Text style={styles.smallBtnText}>Start budget in {displayMonth(month, { month: 'long' })}</Text>
+              </Pressable>
             </View>
           ) : (
-            <View style={styles.categoriesList}>
-              {categories.map((cat) => (
-                <BudgetCategoryRow
-                  key={cat.id}
-                  category={cat}
-                  spent={actuals.by_category[cat.id] ?? 0}
-                  onEdit={() => {
-                    setEditing(cat);
-                    setAddOpen(true);
-                  }}
-                  onDelete={() => handleDelete(cat)}
-                />
-              ))}
-            </View>
+            <ToBudgetCard data={data} />
           )}
 
-          {/* Uncategorized bucket */}
-          {actuals.uncategorized_spent > 0 ? (
-            <View style={styles.uncategorizedCard}>
-              <View style={styles.uncategorizedIcon}>
-                <Ionicons name="help-outline" size={16} color={colors.warning} />
-              </View>
+          {data.autofilled ? (
+            <Text style={styles.autofillNote}>Last month's budget was copied forward. Adjust anything that changed.</Text>
+          ) : null}
+
+          <View style={styles.actionRow}>
+            <ActionChip icon="copy-outline" label="Copy last month" busy={copyMutation.isPending} onPress={() => copyMutation.mutate()} />
+            <ActionChip icon="receipt-outline" label="Fund bills" busy={fundBillsMutation.isPending} onPress={() => fundBillsMutation.mutate()} />
+          </View>
+
+          {data.summary.uncategorized_count > 0 ? (
+            <Pressable
+              onPress={() => router.push({ pathname: '/(tabs)/spending', params: { filter: 'uncategorized', month } })}
+              style={({ pressed }) => [styles.uncatCard, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="help-circle-outline" size={20} color={colors.warning} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.uncategorizedTitle}>Uncategorized spending</Text>
-                <Text style={styles.uncategorizedDesc}>
-                  {formatPrice(actuals.uncategorized_spent)} this month didn't match any
-                  category. Add match patterns to your categories (e.g. "walgreens" or
-                  "AMZN%") to bucket them.
+                <Text style={styles.uncatTitle}>
+                  {data.summary.uncategorized_count} uncategorized · {formatMoney(data.summary.uncategorized_spent)}
+                </Text>
+                <Text style={styles.uncatDesc}>
+                  This money is gone but not in any envelope, so it's taken out of To Budget. Categorize it to see where it went.
                 </Text>
               </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </Pressable>
+          ) : null}
+
+          {data.groups.map((g) => (
+            <View key={g.name} style={{ gap: spacing.sm }}>
+              <View style={styles.groupHeader}>
+                <Text style={styles.groupTitle}>{g.name.toUpperCase()}</Text>
+                <Text style={styles.groupTotals}>
+                  {formatMoney(g.budgeted)} budgeted · {formatMoney(g.balance)} left
+                </Text>
+              </View>
+              {g.categories.map((c) => (
+                <BudgetCategoryRow key={c.id} category={c} onPress={() => setSelected(c)} />
+              ))}
+            </View>
+          ))}
+
+          {data.groups.length === 0 ? (
+            <View style={styles.emptyCategoriesCard}>
+              <Ionicons name="wallet-outline" size={24} color={colors.textMuted} />
+              <Text style={styles.emptyCategoriesTitle}>No envelopes yet</Text>
+              <Text style={styles.emptyCategoriesDesc}>
+                Add categories like Groceries, Gas and Restaurants, then give each one part of your To Budget money.
+              </Text>
             </View>
           ) : null}
+
+          <View style={styles.groupHeader}>
+            <Text style={styles.groupTitle}>INCOME</Text>
+            <Text style={styles.groupTotals}>{formatMoney(data.summary.income)} received</Text>
+          </View>
+          {data.income_categories.map((c) => (
+            <View key={c.id} style={styles.incomeRow}>
+              <Text style={styles.incomeName}>{c.name}</Text>
+              <Text style={styles.incomeValue}>{formatMoney(c.activity)}</Text>
+            </View>
+          ))}
+          {data.summary.transfers_excluded > 0 ? (
+            <Text style={styles.footNote}>
+              {formatMoney(data.summary.transfers_excluded)} of card payments and transfers between your accounts was left out of both income and spending.
+            </Text>
+          ) : null}
         </ScrollView>
+      )}
+
+      {data ? (
+        <CategoryActionsSheet
+          category={selected}
+          budget={data}
+          onClose={() => setSelected(null)}
+          onChanged={applyBudget}
+          onViewTransactions={(c) => {
+            setSelected(null);
+            router.push({ pathname: '/(tabs)/spending', params: { category_id: c.id, category_name: c.name, month } });
+          }}
+          onEdit={(c) => {
+            setSelected(null);
+            setEditing(c);
+            setEditorOpen(true);
+          }}
+        />
       ) : null}
 
       <AddBudgetCategoryModal
-        visible={addOpen}
+        visible={editorOpen}
         editing={editing}
+        groups={allGroups}
+        month={month}
         onClose={() => {
-          setAddOpen(false);
+          setEditorOpen(false);
           setEditing(null);
         }}
-        onSubmit={async (input) => {
-          if (editing) {
-            await updateCategoryMutation.mutateAsync({
-              id: editing.id,
-              patch: input,
-            });
-          } else {
-            await addCategoryMutation.mutateAsync(input);
-          }
-        }}
+        onSaved={refreshAll}
       />
+
+      <BudgetSettingsSheet visible={settingsOpen} onClose={() => setSettingsOpen(false)} onSaved={refreshAll} />
     </SafeAreaView>
   );
 }
 
-function SubStat({
+function ToBudgetCard({ data }: { data: EnvelopeBudget }) {
+  const s = data.summary;
+  const tb = data.to_budget;
+  const color = tb < -0.004 ? colors.negative : tb > 0.004 ? colors.positive : colors.text;
+  const parts = [
+    `${formatMoney(s.carried_in)} carried in`,
+    `+ ${formatMoney(s.income)} income`,
+    `− ${formatMoney(s.budgeted)} budgeted`,
+  ];
+  if (s.overspent_last_month > 0) parts.push(`− ${formatMoney(s.overspent_last_month)} overspent last month`);
+  if (s.uncategorized_spent > 0) parts.push(`− ${formatMoney(s.uncategorized_spent)} uncategorized`);
+  return (
+    <View style={styles.summaryCard}>
+      <Text style={styles.summaryLabel}>TO BUDGET</Text>
+      <Text style={[styles.summaryValue, { color }]}>{formatMoney(tb)}</Text>
+      <Text style={styles.summaryHint}>
+        {tb < -0.004
+          ? 'You budgeted more than you have. Pull money back from an envelope.'
+          : tb > 0.004
+            ? 'Give every dollar a job: assign this to an envelope.'
+            : 'Every dollar has a job.'}
+      </Text>
+      <View style={styles.formulaRow}>
+        {parts.map((p) => (
+          <Text key={p} style={styles.formula}>
+            {p}
+          </Text>
+        ))}
+      </View>
+      <View style={styles.subGrid}>
+        <SubStat label="Income" value={s.income} color={colors.positive} />
+        <SubStat label="Spent" value={s.spent} />
+        <SubStat label="In envelopes" value={s.available_in_categories} />
+      </View>
+    </View>
+  );
+}
+
+function BudgetSettingsSheet({ visible, onClose, onSaved }: { visible: boolean; onClose: () => void; onSaved: () => void }) {
+  const q = useQuery({ queryKey: ['budget-settings'], queryFn: apiClient.getBudgetSettings, enabled: visible });
+  const [funds, setFunds] = useState('');
+  const [start, setStart] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const settings = q.data?.settings;
+  const save = useMutation({
+    mutationFn: () => {
+      const n = funds.trim() === '' ? undefined : Number(funds);
+      if (n != null && !Number.isFinite(n)) throw new Error('Enter a valid amount.');
+      if (start && !/^\d{4}-\d{2}$/.test(start)) throw new Error('Start month must look like 2026-10.');
+      return apiClient.updateBudgetSettings({ starting_funds: n, start_month: start || undefined });
+    },
+    onSuccess: () => {
+      onSaved();
+      onClose();
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'Failed to save.'),
+  });
+  return (
+    <Sheet visible={visible} onClose={onClose} eyebrow="BUDGET SETTINGS" title="Where your budget starts">
+      <View style={sheetStyles.field}>
+        <Text style={sheetStyles.label}>START MONTH</Text>
+        <TextInput
+          value={start}
+          onChangeText={setStart}
+          placeholder={settings?.start_month ?? 'YYYY-MM'}
+          placeholderTextColor={colors.textDim}
+          style={sheetStyles.input}
+          autoCapitalize="none"
+        />
+        <Text style={sheetStyles.hint}>Income and spending before this month are ignored by the envelopes.</Text>
+      </View>
+      <View style={sheetStyles.field}>
+        <Text style={sheetStyles.label}>STARTING CASH TO BUDGET</Text>
+        <View style={sheetStyles.currencyWrap}>
+          <Text style={sheetStyles.currencyPrefix}>$</Text>
+          <TextInput
+            value={funds}
+            onChangeText={setFunds}
+            placeholder={settings ? String(settings.starting_funds) : '0'}
+            placeholderTextColor={colors.textDim}
+            keyboardType="decimal-pad"
+            style={sheetStyles.currencyInput}
+          />
+        </View>
+        <Text style={sheetStyles.hint}>
+          Money you already had in checking and savings on day one. It's added to To Budget in the start month, like Actual's starting balance.
+        </Text>
+      </View>
+      {error ? (
+        <View style={sheetStyles.errorBox}>
+          <Text style={sheetStyles.errorText}>{error}</Text>
+        </View>
+      ) : null}
+      <Pressable onPress={() => save.mutate()} style={sheetStyles.primaryBtn}>
+        {save.isPending ? <ActivityIndicator color={colors.bg} /> : <Text style={sheetStyles.primaryText}>Save</Text>}
+      </Pressable>
+    </Sheet>
+  );
+}
+
+function MonthBtn({
   label,
-  value,
-  positive,
-  warn,
+  onPress,
+  active,
+  icon,
+  iconRight,
 }: {
   label: string;
-  value: number;
-  positive?: boolean;
-  warn?: boolean;
+  onPress: () => void;
+  active?: boolean;
+  icon?: keyof typeof Ionicons.glyphMap;
+  iconRight?: keyof typeof Ionicons.glyphMap;
 }) {
-  const color = warn ? colors.negative : positive ? colors.positive : colors.text;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={active}
+      style={({ pressed }) => [styles.monthBtn, active && styles.monthBtnActive, pressed && { opacity: 0.6 }]}
+    >
+      {icon ? <Ionicons name={icon} size={16} color={colors.text} /> : null}
+      <Text style={[styles.monthBtnText, active && styles.monthBtnActiveText]}>{label}</Text>
+      {iconRight ? <Ionicons name={iconRight} size={16} color={colors.text} /> : null}
+    </Pressable>
+  );
+}
+
+function ActionChip({
+  icon,
+  label,
+  onPress,
+  busy,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <Pressable onPress={onPress} disabled={busy} style={({ pressed }) => [styles.actionChip, pressed && { opacity: 0.7 }]}>
+      {busy ? <ActivityIndicator size="small" color={colors.accent} /> : <Ionicons name={icon} size={14} color={colors.accent} />}
+      <Text style={styles.actionChipText}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function SubStat({ label, value, color }: { label: string; value: number; color?: string }) {
   return (
     <View style={styles.subStat}>
       <Text style={styles.subStatLabel}>{label}</Text>
-      <Text style={[styles.subStatValue, { color }]}>
-        {value < 0 ? '−' : ''}
-        {formatPrice(Math.abs(value))}
-      </Text>
+      <Text style={[styles.subStatValue, { color: color ?? colors.text }]}>{formatMoney(value)}</Text>
     </View>
   );
 }
@@ -473,34 +411,12 @@ function SubStat({
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  empty: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    gap: spacing.md,
-  },
+  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl, gap: spacing.md },
   emptyTitle: { ...type.title, color: colors.text, textAlign: 'center' },
-  emptyDesc: {
-    ...type.body,
-    color: colors.textMuted,
-    textAlign: 'center',
-    maxWidth: 380,
-    lineHeight: 22,
-  },
-  retryBtn: {
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.sm + 2,
-    backgroundColor: colors.accent,
-    borderRadius: radius.md,
-  },
+  emptyDesc: { ...type.body, color: colors.textMuted, textAlign: 'center', maxWidth: 380, lineHeight: 22 },
+  retryBtn: { paddingHorizontal: spacing.xl, paddingVertical: spacing.sm + 2, backgroundColor: colors.accent, borderRadius: radius.md },
   retryBtnText: { ...type.heading, color: colors.bg, fontSize: 14 },
-
-  scrollContent: {
-    paddingHorizontal: spacing.xl,
-    paddingBottom: spacing.xxl,
-    gap: spacing.md,
-  },
+  scrollContent: { paddingHorizontal: spacing.xl, paddingBottom: spacing.xxl, gap: spacing.md, maxWidth: 760, width: '100%', alignSelf: 'center' },
 
   monthRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   monthBtn: {
@@ -517,12 +433,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   monthBtnActive: { backgroundColor: colors.accent, borderColor: colors.accent },
-  monthBtnText: {
-    ...type.micro,
-    color: colors.text,
-    fontWeight: '600',
-    fontSize: 11,
-  },
+  monthBtnText: { ...type.micro, color: colors.text, fontWeight: '600', fontSize: 11 },
   monthBtnActiveText: { color: colors.bg },
 
   summaryCard: {
@@ -534,67 +445,59 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   summaryLabel: { ...type.micro, color: colors.textMuted, letterSpacing: 0.8 },
-  summaryValue: {
-    ...type.display,
-    color: colors.text,
-    fontSize: 36,
-    fontVariant: ['tabular-nums' as const],
-  },
-  summaryHint: { ...type.caption, color: colors.textMuted, marginTop: 2 },
+  summaryValue: { ...type.display, fontSize: 36, fontVariant: ['tabular-nums' as const] },
+  summaryHint: { ...type.caption, color: colors.textMuted },
+  formulaRow: { flexDirection: 'row', flexWrap: 'wrap', columnGap: spacing.sm, marginTop: spacing.xs },
+  formula: { ...type.micro, color: colors.textDim, lineHeight: 16 },
   subGrid: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
   subStat: { flex: 1, gap: 2 },
   subStatLabel: { ...type.micro, color: colors.textDim, letterSpacing: 0.4 },
-  subStatValue: {
-    ...type.heading,
-    fontVariant: ['tabular-nums' as const],
-    fontSize: 14,
-  },
+  subStatValue: { ...type.heading, fontVariant: ['tabular-nums' as const], fontSize: 14 },
 
-  inputRow: { flexDirection: 'row', gap: spacing.md },
-  inputBlock: { flex: 1, gap: 4 },
-  inputLabel: { ...type.micro, color: colors.textMuted, letterSpacing: 0.5 },
-  currencyInputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  noticeCard: {
     backgroundColor: colors.bgCard,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    paddingHorizontal: spacing.md,
+    borderColor: colors.border,
+    padding: spacing.lg,
+    gap: spacing.sm,
   },
-  currencyPrefix: { ...type.body, color: colors.textMuted, fontSize: 15 },
-  currencyInput: {
-    flex: 1,
-    color: colors.text,
-    paddingVertical: spacing.sm + 2,
-    paddingHorizontal: 4,
-    fontSize: 15,
-    fontVariant: ['tabular-nums' as const],
-  },
+  noticeTitle: { ...type.heading, color: colors.text },
+  noticeDesc: { ...type.caption, color: colors.textMuted, lineHeight: 18 },
+  smallBtn: { alignSelf: 'flex-start', backgroundColor: colors.accent, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 6 },
+  smallBtnText: { ...type.caption, color: colors.bg, fontWeight: '700' },
+  autofillNote: { ...type.micro, color: colors.textDim, fontStyle: 'italic' },
 
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: spacing.md,
-  },
-  sectionTitle: {
-    ...type.micro,
-    color: colors.textMuted,
-    letterSpacing: 0.8,
-  },
-  addCategoryBtn: {
+  actionRow: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  actionChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: spacing.sm + 2,
-    paddingVertical: 5,
+    gap: 6,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 7,
     backgroundColor: 'rgba(124, 140, 255, 0.10)',
     borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: 'rgba(124, 140, 255, 0.25)',
   },
-  addCategoryText: { ...type.micro, color: colors.accent, fontWeight: '700' },
+  actionChipText: { ...type.micro, color: colors.accent, fontWeight: '700' },
+
+  uncatCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  uncatTitle: { ...type.heading, color: colors.text, fontSize: 14 },
+  uncatDesc: { ...type.micro, color: colors.textMuted, lineHeight: 16, marginTop: 2 },
+
+  groupHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginTop: spacing.md, gap: spacing.sm },
+  groupTitle: { ...type.micro, color: colors.textMuted, letterSpacing: 0.8 },
+  groupTotals: { ...type.micro, color: colors.textDim, fontVariant: ['tabular-nums' as const] },
 
   emptyCategoriesCard: {
     alignItems: 'center',
@@ -608,88 +511,19 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   emptyCategoriesTitle: { ...type.heading, color: colors.text },
-  emptyCategoriesDesc: {
-    ...type.caption,
-    color: colors.textMuted,
-    textAlign: 'center',
-    maxWidth: 320,
-    lineHeight: 18,
-  },
-  categoriesList: { gap: spacing.sm },
+  emptyCategoriesDesc: { ...type.caption, color: colors.textMuted, textAlign: 'center', maxWidth: 320, lineHeight: 18 },
 
-  uncategorizedCard: {
+  incomeRow: {
     flexDirection: 'row',
-    gap: spacing.sm,
-    backgroundColor: 'rgba(255, 159, 10, 0.08)',
-    borderColor: 'rgba(255, 159, 10, 0.25)',
-    borderWidth: 1,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    marginTop: spacing.md,
-  },
-  uncategorizedIcon: { width: 28, alignItems: 'center', paddingTop: 1 },
-  uncategorizedTitle: { ...type.heading, color: colors.text, fontSize: 14 },
-  uncategorizedDesc: {
-    ...type.caption,
-    color: colors.textMuted,
-    lineHeight: 18,
-  },
-  transferNote: {
-    ...type.micro,
-    color: colors.textDim,
-    marginTop: spacing.sm,
-    fontStyle: 'italic',
-    fontSize: 10,
-  },
-  sectionSubtitle: {
-    ...type.micro,
-    color: colors.textMuted,
-    fontVariant: ['tabular-nums' as const],
-    letterSpacing: 0.4,
-  },
-  fixedRow: {
+    justifyContent: 'space-between',
     backgroundColor: colors.bgCard,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.borderSubtle,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    gap: spacing.xs + 2,
   },
-  fixedHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  fixedName: { ...type.heading, color: colors.text, fontSize: 14, flex: 1 },
-  fixedCadence: {
-    ...type.micro,
-    color: colors.textDim,
-    letterSpacing: 0.4,
-    fontSize: 10,
-  },
-  fixedAmounts: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: spacing.xs,
-  },
-  fixedSpent: {
-    ...type.heading,
-    color: colors.text,
-    fontVariant: ['tabular-nums' as const],
-    fontSize: 15,
-  },
-  fixedLimit: {
-    ...type.caption,
-    color: colors.textMuted,
-    fontVariant: ['tabular-nums' as const],
-  },
-  fixedPct: {
-    ...type.micro,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-  },
-  barBg: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.bgElevated,
-    overflow: 'hidden',
-  },
-  barFill: { height: '100%', borderRadius: 3 },
+  incomeName: { ...type.heading, color: colors.text, fontSize: 15 },
+  incomeValue: { ...type.heading, color: colors.positive, fontSize: 15, fontVariant: ['tabular-nums' as const] },
+  footNote: { ...type.micro, color: colors.textDim, fontStyle: 'italic', lineHeight: 15 },
 });

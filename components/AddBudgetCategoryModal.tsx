@@ -1,276 +1,248 @@
 import { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, Switch, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { BudgetCategory } from '../lib/api';
-import { colors, radius, spacing, type } from '../theme/colors';
+import { apiClient, type EnvelopeCategory } from '../lib/api';
+import { colors } from '../theme/colors';
+import { Sheet, sheetStyles as s } from './Sheet';
 
 interface Props {
   visible: boolean;
-  /** If provided, the modal is in edit mode and prefills these values. */
-  editing: BudgetCategory | null;
+  /** Edit mode when set. */
+  editing: EnvelopeCategory | null;
+  groups: string[];
+  month: string;
   onClose: () => void;
-  onSubmit: (input: {
-    name: string;
-    monthly_limit: number;
-    match_patterns: string[];
-  }) => Promise<void>;
+  onSaved: () => void;
 }
 
 /**
- * Modal to add or edit a budget category. Match patterns are entered as a
- * comma-separated list; each item becomes a case-insensitive substring match
- * against transaction description + merchant. Supports `%` as a wildcard so
- * "AMZN%" matches AMZN-prefixed lines.
+ * Add or edit an envelope category. Categories persist across months; the
+ * amount entered here is only this month's budget (it copies forward to new
+ * months automatically). Match patterns become categorization rules.
  */
-export function AddBudgetCategoryModal({ visible, editing, onClose, onSubmit }: Props) {
+export function AddBudgetCategoryModal({ visible, editing, groups, month, onClose, onSaved }: Props) {
   const [name, setName] = useState('');
-  const [limit, setLimit] = useState('');
+  const [group, setGroup] = useState('Everyday');
+  const [newGroup, setNewGroup] = useState('');
+  const [budgeted, setBudgeted] = useState('');
   const [patterns, setPatterns] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const [rollover, setRollover] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const groupChoices = [...new Set(['Bills', 'Everyday', 'Savings', ...groups])].filter((g) => g !== 'Income');
 
   useEffect(() => {
     if (!visible) return;
-    if (editing) {
-      setName(editing.name);
-      setLimit(String(editing.monthly_limit || ''));
-      setPatterns(editing.match_patterns.join(', '));
-    } else {
-      setName('');
-      setLimit('');
-      setPatterns('');
-    }
+    setName(editing?.name ?? '');
+    setGroup(editing?.group_name ?? 'Everyday');
+    setNewGroup('');
+    setBudgeted('');
+    setPatterns(editing?.match_patterns.join(', ') ?? '');
+    setRollover(editing?.rollover_overspending ?? false);
     setError(null);
   }, [visible, editing]);
 
-  const handleSubmit = async (): Promise<void> => {
-    const trimmedName = name.trim();
-    if (!trimmedName) {
+  const patternList = (): string[] =>
+    patterns
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+  const save = async (): Promise<void> => {
+    const trimmed = name.trim();
+    if (!trimmed) {
       setError('Name is required.');
       return;
     }
-    const limitNum = Number(limit);
-    if (!Number.isFinite(limitNum) || limitNum < 0) {
-      setError('Enter a valid monthly limit.');
-      return;
-    }
-    const patternList = patterns
-      .split(',')
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0);
-
-    setSubmitting(true);
+    const groupName = newGroup.trim() || group;
+    setBusy(true);
     setError(null);
     try {
-      await onSubmit({
-        name: trimmedName,
-        monthly_limit: limitNum,
-        match_patterns: patternList,
-      });
+      if (editing) {
+        await apiClient.updateCategory(editing.id, {
+          name: trimmed,
+          group_name: groupName,
+          rollover_overspending: rollover,
+          match_patterns: patternList(),
+        });
+      } else {
+        const amount = budgeted.trim() ? Number(budgeted) : undefined;
+        if (amount != null && (!Number.isFinite(amount) || amount < 0)) {
+          setError('Enter a valid amount.');
+          setBusy(false);
+          return;
+        }
+        await apiClient.addCategory({
+          name: trimmed,
+          group_name: groupName,
+          rollover_overspending: rollover,
+          match_patterns: patternList(),
+          budgeted: amount,
+          month,
+        });
+      }
+      onSaved();
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save.');
     } finally {
-      setSubmitting(false);
+      setBusy(false);
+    }
+  };
+
+  const remove = (): void => {
+    if (!editing) return;
+    const message = `Delete "${editing.name}"? Its transactions become uncategorized and its rules are removed. To keep the history, hide it instead.`;
+    const go = async (): Promise<void> => {
+      setBusy(true);
+      try {
+        await apiClient.deleteCategory(editing.id);
+        onSaved();
+        onClose();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to delete.');
+      } finally {
+        setBusy(false);
+      }
+    };
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.confirm(message)) void go();
+      return;
+    }
+    Alert.alert('Delete category?', message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => void go() },
+    ]);
+  };
+
+  const hide = async (): Promise<void> => {
+    if (!editing) return;
+    setBusy(true);
+    try {
+      await apiClient.updateCategory(editing.id, { hidden: true });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to hide.');
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <Pressable style={styles.backdropPress} onPress={onClose} />
-        <View style={styles.sheet}>
-          <View style={styles.handle} />
-          <View style={styles.header}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.eyebrow}>{editing ? 'EDIT CATEGORY' : 'NEW CATEGORY'}</Text>
-              <Text style={styles.title}>{editing ? editing.name : 'Add category'}</Text>
-            </View>
-            <Pressable onPress={onClose} hitSlop={12} style={styles.closeBtn}>
-              <Ionicons name="close" size={22} color={colors.textMuted} />
-            </Pressable>
-          </View>
-
-          <ScrollView contentContainerStyle={styles.body}>
-            <View style={styles.field}>
-              <Text style={styles.label}>NAME</Text>
-              <TextInput
-                value={name}
-                onChangeText={setName}
-                placeholder="Groceries"
-                placeholderTextColor={colors.textDim}
-                style={styles.input}
-                autoCorrect={false}
-              />
-            </View>
-
-            <View style={styles.field}>
-              <Text style={styles.label}>MONTHLY LIMIT</Text>
-              <View style={styles.currencyInputWrap}>
-                <Text style={styles.currencyPrefix}>$</Text>
-                <TextInput
-                  value={limit}
-                  onChangeText={setLimit}
-                  placeholder="600"
-                  placeholderTextColor={colors.textDim}
-                  keyboardType="decimal-pad"
-                  style={styles.currencyInput}
-                />
-              </View>
-            </View>
-
-            <View style={styles.field}>
-              <Text style={styles.label}>MATCH PATTERNS</Text>
-              <TextInput
-                value={patterns}
-                onChangeText={setPatterns}
-                placeholder="whole foods, trader joe, kroger, safeway"
-                placeholderTextColor={colors.textDim}
-                style={styles.input}
-                autoCapitalize="none"
-                autoCorrect={false}
-                multiline
-              />
-              <Text style={styles.hint}>
-                Comma-separated. Case-insensitive. Each pattern matches against transaction
-                description + merchant. Use % as a wildcard (e.g. "AMZN%").
-              </Text>
-            </View>
-
-            {error ? (
-              <View style={styles.errorBox}>
-                <Ionicons name="alert-circle-outline" size={14} color={colors.negative} />
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            ) : null}
-
-            <Pressable
-              onPress={() => void handleSubmit()}
-              disabled={submitting}
-              style={({ pressed }) => [
-                styles.submitBtn,
-                (submitting || pressed) && { opacity: 0.7 },
-              ]}
-            >
-              {submitting ? (
-                <ActivityIndicator color={colors.bg} />
-              ) : (
-                <>
-                  <Ionicons
-                    name={editing ? 'checkmark' : 'add'}
-                    size={16}
-                    color={colors.bg}
-                  />
-                  <Text style={styles.submitText}>
-                    {editing ? 'Save changes' : 'Add category'}
-                  </Text>
-                </>
-              )}
-            </Pressable>
-          </ScrollView>
-        </View>
+    <Sheet
+      visible={visible}
+      onClose={onClose}
+      eyebrow={editing ? 'EDIT CATEGORY' : 'NEW CATEGORY'}
+      title={editing ? editing.name : 'Add category'}
+    >
+      <View style={s.field}>
+        <Text style={s.label}>NAME</Text>
+        <TextInput
+          value={name}
+          onChangeText={setName}
+          placeholder="Groceries"
+          placeholderTextColor={colors.textDim}
+          style={s.input}
+          autoCorrect={false}
+        />
       </View>
-    </Modal>
+
+      <View style={s.field}>
+        <Text style={s.label}>GROUP</Text>
+        <View style={s.chipRow}>
+          {groupChoices.map((g) => {
+            const active = !newGroup && g === group;
+            return (
+              <Pressable key={g} onPress={() => { setGroup(g); setNewGroup(''); }} style={[s.chip, active && s.chipActive]}>
+                <Text style={[s.chipText, active && s.chipTextActive]}>{g}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <TextInput
+          value={newGroup}
+          onChangeText={setNewGroup}
+          placeholder="…or type a new group"
+          placeholderTextColor={colors.textDim}
+          style={[s.input, { marginTop: 6 }]}
+        />
+      </View>
+
+      {!editing ? (
+        <View style={s.field}>
+          <Text style={s.label}>BUDGET THIS MONTH</Text>
+          <View style={s.currencyWrap}>
+            <Text style={s.currencyPrefix}>$</Text>
+            <TextInput
+              value={budgeted}
+              onChangeText={setBudgeted}
+              placeholder="0"
+              placeholderTextColor={colors.textDim}
+              keyboardType="decimal-pad"
+              style={s.currencyInput}
+            />
+          </View>
+          <Text style={s.hint}>Comes out of To Budget. Copies forward to next month automatically.</Text>
+        </View>
+      ) : null}
+
+      <View style={s.field}>
+        <Text style={s.label}>MATCH PATTERNS</Text>
+        <TextInput
+          value={patterns}
+          onChangeText={setPatterns}
+          placeholder="jewel, mariano, costco%"
+          placeholderTextColor={colors.textDim}
+          style={s.input}
+          autoCapitalize="none"
+          autoCorrect={false}
+          multiline
+        />
+        <Text style={s.hint}>
+          Comma-separated, case-insensitive. Each one becomes a rule that files matching transactions here, including past ones. Use % as a wildcard.
+        </Text>
+      </View>
+
+      <View style={s.toggleRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={s.toggleTitle}>Roll overspending forward</Text>
+          <Text style={s.toggleDesc}>
+            Off: overspending comes out of next month's To Budget. On: it stays in this category as a negative balance.
+          </Text>
+        </View>
+        <Switch value={rollover} onValueChange={setRollover} trackColor={{ true: colors.accent, false: colors.border }} />
+      </View>
+
+      {error ? (
+        <View style={s.errorBox}>
+          <Ionicons name="alert-circle-outline" size={14} color={colors.negative} />
+          <Text style={s.errorText}>{error}</Text>
+        </View>
+      ) : null}
+
+      <Pressable onPress={() => void save()} disabled={busy} style={({ pressed }) => [s.primaryBtn, (busy || pressed) && { opacity: 0.7 }]}>
+        {busy ? <ActivityIndicator color={colors.bg} /> : (
+          <>
+            <Ionicons name={editing ? 'checkmark' : 'add'} size={16} color={colors.bg} />
+            <Text style={s.primaryText}>{editing ? 'Save changes' : 'Add category'}</Text>
+          </>
+        )}
+      </Pressable>
+
+      {editing ? (
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Pressable onPress={() => void hide()} disabled={busy} style={[s.secondaryBtn, { flex: 1 }]}>
+            <Ionicons name="eye-off-outline" size={16} color={colors.text} />
+            <Text style={s.secondaryText}>Hide</Text>
+          </Pressable>
+          <Pressable onPress={remove} disabled={busy} style={[s.secondaryBtn, { flex: 1 }]}>
+            <Ionicons name="trash-outline" size={16} color={colors.negative} />
+            <Text style={s.dangerText}>Delete</Text>
+          </Pressable>
+        </View>
+      ) : null}
+    </Sheet>
   );
 }
-
-const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  backdropPress: { ...StyleSheet.absoluteFillObject },
-  sheet: {
-    backgroundColor: colors.bgElevated,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    paddingTop: spacing.md,
-    paddingHorizontal: spacing.xl,
-    paddingBottom: spacing.xl,
-    maxHeight: '90%',
-    borderTopWidth: 1,
-    borderColor: colors.border,
-  },
-  handle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-    alignSelf: 'center',
-    marginBottom: spacing.md,
-  },
-  header: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing.md },
-  eyebrow: { ...type.micro, color: colors.accent, letterSpacing: 0.8 },
-  title: { ...type.title, color: colors.text, marginTop: 2 },
-  closeBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.bgCard,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  body: { gap: spacing.md, paddingBottom: spacing.md },
-  field: { gap: 4 },
-  label: { ...type.micro, color: colors.textMuted, letterSpacing: 0.5 },
-  input: {
-    backgroundColor: colors.bgCard,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm + 2,
-    color: colors.text,
-    fontSize: 15,
-  },
-  currencyInputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.bgCard,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-  },
-  currencyPrefix: { ...type.body, color: colors.textMuted, fontSize: 15 },
-  currencyInput: {
-    flex: 1,
-    color: colors.text,
-    paddingVertical: spacing.sm + 2,
-    paddingHorizontal: 4,
-    fontSize: 15,
-    fontVariant: ['tabular-nums' as const],
-  },
-  hint: { ...type.micro, color: colors.textDim, lineHeight: 16 },
-  errorBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 6,
-    backgroundColor: 'rgba(255, 59, 48, 0.08)',
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 59, 48, 0.25)',
-  },
-  errorText: { ...type.caption, color: colors.negative, flex: 1 },
-  submitBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-    backgroundColor: colors.accent,
-    borderRadius: radius.md,
-    marginTop: spacing.sm,
-  },
-  submitText: { ...type.heading, color: colors.bg, fontSize: 15 },
-});

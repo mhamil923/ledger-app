@@ -407,6 +407,8 @@ export interface BankAccount {
   currency: string;
   current_balance: number | null;
   last_synced_at: string | null;
+  /** Off-budget accounts (brokerage, loans) are tracked for net worth only. */
+  on_budget?: boolean;
 }
 
 export interface BankTransaction {
@@ -419,9 +421,20 @@ export interface BankTransaction {
   merchant: string | null;
   category: string | null;
   pending: boolean;
-  /** True when this looks like a credit-card payment or internal transfer,
-   *  not real spending. Server-classified. */
+  /** True for credit-card payments and transfers between your own accounts.
+   *  Stored by the server's transaction engine (paired, pattern, rule or
+   *  manual) — these never count as spending or income. */
   is_transfer?: boolean;
+  transfer_source?: 'paired' | 'pattern' | 'rule' | 'manual' | null;
+  transfer_txn_id?: string | null;
+  category_id?: string | null;
+  category_name?: string | null;
+  category_source?: 'rule' | 'ai' | 'manual' | null;
+  notes?: string | null;
+  account_name?: string;
+  institution?: string | null;
+  account_type?: string;
+  on_budget?: boolean;
 }
 
 export interface ReadinessResponse {
@@ -625,33 +638,99 @@ export const apiClient = {
     }),
   deleteBill: (id: string) => api<{ ok: true }>(`/api/bills/${id}`, { method: 'DELETE' }),
 
+  // ---- Envelope budget (Actual Budget model) ----
   getBudget: (month?: string) => {
     const qs = month ? `?month=${encodeURIComponent(month)}` : '';
-    return api<BudgetResponse>(`/api/budgets${qs}`);
+    return api<EnvelopeBudget>(`/api/budgets${qs}`);
   },
-  updateBudget: (id: string, input: { monthly_income?: number; savings_target?: number }) =>
-    api<{ budget: Budget }>(`/api/budgets/${id}`, { method: 'PATCH', body: input }),
-  addBudgetCategory: (
-    budgetId: string,
-    input: { name: string; monthly_limit: number; match_patterns?: string[] },
-  ) =>
-    api<{ category: BudgetCategory }>(`/api/budgets/${budgetId}/categories`, {
+  setBudgeted: (month: string, categoryId: string, budgeted: number) =>
+    api<EnvelopeBudget>(`/api/budgets/${month}/categories/${categoryId}`, {
+      method: 'PUT',
+      body: { budgeted },
+    }),
+  moveMoney: (
+    month: string,
+    input: { from_category_id: string | null; to_category_id: string | null; amount: number },
+  ) => api<EnvelopeBudget>(`/api/budgets/${month}/move`, { method: 'POST', body: input }),
+  copyLastMonth: (month: string, overwrite = false) =>
+    api<EnvelopeBudget & { copied: number }>(`/api/budgets/${month}/copy-last-month`, {
       method: 'POST',
-      body: input,
+      body: { overwrite },
     }),
-  updateBudgetCategory: (
-    budgetId: string,
-    categoryId: string,
-    input: { name?: string; monthly_limit?: number; match_patterns?: string[] },
+  fundBills: (month: string) =>
+    api<EnvelopeBudget & { funded: number }>(`/api/budgets/${month}/fund-bills`, { method: 'POST' }),
+  getBudgetSettings: () => api<{ settings: BudgetSettings }>('/api/budgets/settings'),
+  updateBudgetSettings: (input: { start_month?: string; starting_funds?: number }) =>
+    api<{ settings: BudgetSettings }>('/api/budgets/settings', { method: 'PATCH', body: input }),
+
+  getCategories: () => api<{ categories: Category[]; groups: string[] }>('/api/categories'),
+  addCategory: (input: {
+    name: string;
+    group_name?: string;
+    is_income?: boolean;
+    rollover_overspending?: boolean;
+    match_patterns?: string[];
+    budgeted?: number;
+    month?: string;
+  }) => api<{ category: Category }>('/api/categories', { method: 'POST', body: input }),
+  updateCategory: (
+    id: string,
+    input: {
+      name?: string;
+      group_name?: string;
+      rollover_overspending?: boolean;
+      hidden?: boolean;
+      match_patterns?: string[];
+    },
+  ) => api<{ category: Category }>(`/api/categories/${id}`, { method: 'PATCH', body: input }),
+  deleteCategory: (id: string, transferTo?: string) =>
+    api<{ ok: true }>(
+      `/api/categories/${id}${transferTo ? `?transfer_to=${encodeURIComponent(transferTo)}` : ''}`,
+      { method: 'DELETE' },
+    ),
+
+  getRules: () => api<{ rules: CategoryRule[] }>('/api/rules'),
+  addRule: (input: CategoryRuleInput) =>
+    api<{ rule: CategoryRule; processed: ProcessResult }>('/api/rules', { method: 'POST', body: input }),
+  updateRule: (id: string, input: CategoryRuleInput) =>
+    api<{ rule: CategoryRule; processed: ProcessResult }>(`/api/rules/${id}`, { method: 'PATCH', body: input }),
+  deleteRule: (id: string) => api<{ ok: true }>(`/api/rules/${id}`, { method: 'DELETE' }),
+  runRules: () => api<{ processed: ProcessResult }>('/api/rules/run', { method: 'POST' }),
+
+  getTransactions: (params: {
+    month?: string;
+    days?: number;
+    category_id?: string;
+    account_id?: string;
+    uncategorized?: boolean;
+    transfers?: 'include' | 'exclude' | 'only';
+    search?: string;
+    limit?: number;
+  } = {}) => {
+    const q = new URLSearchParams();
+    if (params.month) q.set('month', params.month);
+    if (params.days) q.set('days', String(params.days));
+    if (params.category_id) q.set('category_id', params.category_id);
+    if (params.account_id) q.set('account_id', params.account_id);
+    if (params.uncategorized) q.set('uncategorized', '1');
+    if (params.transfers) q.set('transfers', params.transfers);
+    if (params.search) q.set('search', params.search);
+    if (params.limit) q.set('limit', String(params.limit));
+    const suffix = q.toString();
+    return api<{ transactions: BankTransaction[] }>(`/api/transactions${suffix ? `?${suffix}` : ''}`);
+  },
+  updateTransaction: (
+    id: string,
+    input: { category_id?: string | null; is_transfer?: boolean; notes?: string | null; make_rule?: boolean },
   ) =>
-    api<{ category: BudgetCategory }>(`/api/budgets/${budgetId}/categories/${categoryId}`, {
-      method: 'PATCH',
-      body: input,
-    }),
-  deleteBudgetCategory: (budgetId: string, categoryId: string) =>
-    api<{ ok: true }>(`/api/budgets/${budgetId}/categories/${categoryId}`, {
-      method: 'DELETE',
-    }),
+    api<{ transaction: BankTransaction; rule: { id: string; value: string } | null; processed: ProcessResult | null }>(
+      `/api/transactions/${id}`,
+      { method: 'PATCH', body: input },
+    ),
+  setAccountOnBudget: (id: string, on_budget: boolean) =>
+    api<{ ok: true }>(`/api/banking/accounts/${id}`, { method: 'PATCH', body: { on_budget } }),
+
+  getOverview: () => api<Overview>('/api/overview'),
 };
 
 export type BillCadence = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'annual' | 'custom';
@@ -706,63 +785,129 @@ export interface Bill {
   total_paid: number;
 }
 
-export interface Budget {
+export interface BudgetSettings {
+  start_month: string;
+  starting_funds: number;
+  processed_at: string | null;
+}
+
+export interface Category {
   id: string;
-  month: string; // YYYY-MM
-  monthly_income: number;
-  savings_target: number;
+  name: string;
+  group_name: string;
+  is_income: boolean;
+  rollover_overspending: boolean;
+  hidden: boolean;
+  sort_order: number;
+  match_patterns: string[];
+}
+
+export interface EnvelopeCategory extends Category {
+  /** Assigned to this category this month. */
+  budgeted: number;
+  /** Signed sum of this month's transactions (negative = spent). */
+  activity: number;
+  /** Positive leftover carried in from last month (or negative, when
+   *  rollover_overspending is on). */
+  carryover: number;
+  /** What's left to spend: carryover + budgeted + activity. */
+  balance: number;
+  bill: {
+    id: string;
+    cadence: BillCadence;
+    amount: number;
+    next_due_date: string | null;
+    monthly_equivalent: number;
+  } | null;
+}
+
+export interface EnvelopeGroup {
+  name: string;
+  budgeted: number;
+  activity: number;
+  balance: number;
+  categories: EnvelopeCategory[];
+}
+
+export interface EnvelopeBudget {
+  month: string;
+  current_month?: string;
+  start_month: string;
+  starting_funds: number;
+  before_start: boolean;
+  autofilled?: boolean;
+  /** Money not yet assigned to any category. Negative = over-assigned. */
+  to_budget: number;
+  summary: {
+    carried_in: number;
+    income: number;
+    budgeted: number;
+    spent: number;
+    overspent_last_month: number;
+    uncategorized_spent: number;
+    uncategorized_count: number;
+    transfers_excluded: number;
+    available_in_categories: number;
+  };
+  groups: EnvelopeGroup[];
+  income_categories: Array<{ id: string; name: string; activity: number }>;
+}
+
+export interface CategoryRuleInput {
+  stage?: 'pre' | 'default' | 'post';
+  field?: 'any' | 'payee' | 'description';
+  op?: 'contains' | 'is' | 'starts_with' | 'pattern';
+  value: string;
+  amount_min?: number | null;
+  amount_max?: number | null;
+  account_id?: string | null;
+  category_id?: string | null;
+  set_transfer?: boolean | null;
+}
+
+export interface CategoryRule extends Required<Omit<CategoryRuleInput, 'amount_min' | 'amount_max'>> {
+  id: string;
+  amount_min: string | null;
+  amount_max: string | null;
+  source: 'manual' | 'learned' | 'category_pattern' | 'bill';
+  category_name: string | null;
+  hits: number;
   created_at: string;
 }
 
-export interface BudgetCategory {
-  id: string;
-  name: string;
-  monthly_limit: number;
-  match_patterns: string[];
-  sort_order: number;
+export interface ProcessResult {
+  scanned: number;
+  transfers_paired: number;
+  transfers_by_pattern: number;
+  categorized_by_rule: number;
+  categorized_by_ai: number;
+  uncategorized_spending: number;
+  changed: number;
 }
 
-export interface BudgetSummary {
-  income: number;
-  total_income_actual: number;
-  total_spent: number;
-  total_fixed_planned: number;
-  total_fixed_spent: number;
-  total_variable_budgeted: number;
-  total_variable_spent: number;
-  uncategorized_spent: number;
-  transfers_excluded: number;
-  savings_target: number;
-  projected_savings: number;
-  remaining_to_budget: number;
-  /** @deprecated use total_variable_budgeted */
-  total_budgeted: number;
-}
-
-export interface BudgetFixedExpense {
-  id: string;
-  name: string;
-  merchant: string | null;
-  monthly_equivalent: number;
-  spent_this_month: number;
-  cadence: string;
-}
-
-export interface BudgetActuals {
-  by_category: Record<string, number>;
-  by_bill: Record<string, number>;
-  fixed_expenses: BudgetFixedExpense[];
-  uncategorized_spent: number;
-  transfers_excluded: number;
-  total_income: number;
-  total_spent: number;
-  total_fixed_planned: number;
-  total_fixed_spent: number;
-}
-
-export interface BudgetResponse {
-  budget: Budget;
-  categories: BudgetCategory[];
-  actuals: BudgetActuals;
-  summary: BudgetSummary;
+export interface Overview {
+  month: string;
+  budget: {
+    cash: number;
+    credit_card_debt: number;
+    to_budget: number;
+    available_in_categories: number;
+    income_this_month: number;
+    spent_this_month: number;
+    uncategorized_count: number;
+    moved_to_trading_this_month: number;
+  };
+  trading: {
+    capital_in_trades: number;
+    holdings_value: number;
+    holdings_unrealized_pl: number;
+    alpaca_live_equity: number;
+    alpaca_paper_equity: number;
+    coinbase_value: number;
+    wallets_value: number;
+    linked_investment_accounts: number;
+    errors: string[];
+  };
+  net_worth: number;
+  off_budget_accounts: Array<{ name: string; institution: string | null; type: string; balance: number }>;
 }

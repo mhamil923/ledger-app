@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { BankAccount, BankTransaction } from '../lib/api';
 import { formatPrice } from '../lib/format';
@@ -7,14 +7,17 @@ import { colors, radius, spacing, type } from '../theme/colors';
 interface Props {
   txn: BankTransaction;
   account?: BankAccount;
+  onPress?: () => void;
 }
 
 /**
- * One transaction row for the Spending tab. SimpleFIN signs amounts as
+ * One transaction row for the Spending tab. Shows the stored category (with a
+ * sparkle when Claude picked it), TRANSFER for card payments / transfers
+ * between your accounts, and UNCATEGORIZED for spending that isn't filed yet. SimpleFIN signs amounts as
  * negative for outflows (spend) and positive for inflows (income/refund),
  * so we use that to color and prefix the figure.
  */
-export function TransactionRow({ txn, account }: Props) {
+export function TransactionRow({ txn, account, onPress }: Props) {
   const isSpend = txn.amount < 0;
   const isTransfer = !!txn.is_transfer;
   // Transfers get a muted color so the eye passes over them — they don't
@@ -26,8 +29,16 @@ export function TransactionRow({ txn, account }: Props) {
       : colors.positive;
   const amountPrefix = isSpend ? '−' : '+';
 
+  const offBudget = txn.on_budget === false;
+  const uncategorized = !isTransfer && !offBudget && !txn.category_id && txn.amount < 0;
+  const inferredIncome = !isTransfer && !offBudget && !txn.category_id && txn.amount > 0;
+
   return (
-    <View style={[styles.row, isTransfer && styles.rowTransfer]}>
+    <Pressable
+      onPress={onPress}
+      disabled={!onPress}
+      style={({ pressed }) => [styles.row, isTransfer && styles.rowTransfer, pressed && { opacity: 0.7 }]}
+    >
       <View style={styles.iconWrap}>
         <Ionicons
           name={
@@ -72,13 +83,28 @@ export function TransactionRow({ txn, account }: Props) {
               <Text style={styles.pendingText}>PENDING</Text>
             </View>
           ) : null}
+          {txn.category_name && !isTransfer ? (
+            <View style={styles.categoryPill}>
+              {txn.category_source === 'ai' ? (
+                <Ionicons name="sparkles-outline" size={9} color={colors.textMuted} />
+              ) : null}
+              <Text style={styles.categoryText}>{txn.category_name}</Text>
+            </View>
+          ) : null}
+          {uncategorized ? (
+            <View style={styles.pendingPill}>
+              <Text style={styles.pendingText}>UNCATEGORIZED</Text>
+            </View>
+          ) : null}
+          {inferredIncome ? <Text style={styles.metaDim}>income</Text> : null}
+          {offBudget ? <Text style={styles.metaDim}>off budget</Text> : null}
         </View>
       </View>
       <Text style={[styles.amount, { color: amountColor }]}>
         {amountPrefix}
         {formatPrice(Math.abs(txn.amount))}
       </Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -147,6 +173,18 @@ const styles = StyleSheet.create({
     fontSize: 9,
     letterSpacing: 0.5,
   },
+  categoryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    backgroundColor: colors.bgElevated,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+  },
+  categoryText: { ...type.micro, color: colors.textMuted, fontSize: 10, letterSpacing: 0.2 },
   pendingText: {
     ...type.micro,
     color: colors.warning,

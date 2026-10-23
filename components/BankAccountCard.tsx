@@ -1,4 +1,7 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { apiClient } from '../lib/api';
 import { Ionicons } from '@expo/vector-icons';
 import type { BankAccount } from '../lib/api';
 import { formatPrice } from '../lib/format';
@@ -27,6 +30,24 @@ interface Props {
 }
 
 export function BankAccountCard({ account }: Props) {
+  const queryClient = useQueryClient();
+  const [onBudget, setOnBudget] = useState(account.on_budget !== false);
+  const [saving, setSaving] = useState(false);
+  const toggleBudget = async (): Promise<void> => {
+    const next = !onBudget;
+    setOnBudget(next);
+    setSaving(true);
+    try {
+      await apiClient.setAccountOnBudget(account.id, next);
+      void queryClient.invalidateQueries({ queryKey: ['budget'] });
+      void queryClient.invalidateQueries({ queryKey: ['overview'] });
+      void queryClient.invalidateQueries({ queryKey: ['bank-accounts'] });
+    } catch {
+      setOnBudget(!next);
+    } finally {
+      setSaving(false);
+    }
+  };
   const icon = TYPE_ICON[account.account_type] ?? 'business-outline';
   const typeLabel = TYPE_LABEL[account.account_type] ?? 'Account';
   const balance = account.current_balance;
@@ -48,6 +69,17 @@ export function BankAccountCard({ account }: Props) {
           ) : null}
           <Text style={styles.metaDim}>{typeLabel}</Text>
           {account.mask ? <Text style={styles.metaDim}>•••• {account.mask}</Text> : null}
+          <Pressable
+            onPress={() => void toggleBudget()}
+            disabled={saving}
+            hitSlop={6}
+            accessibilityLabel={onBudget ? 'On budget, tap to take off budget' : 'Off budget, tap to put on budget'}
+            style={[styles.budgetPill, !onBudget && styles.budgetPillOff]}
+          >
+            <Text style={[styles.budgetPillText, !onBudget && { color: colors.textDim }]}>
+              {onBudget ? 'ON BUDGET' : 'OFF BUDGET'}
+            </Text>
+          </Pressable>
         </View>
       </View>
       <View style={styles.balanceBlock}>
@@ -101,4 +133,14 @@ const styles = StyleSheet.create({
   },
   balanceDebt: { color: colors.negative },
   balanceHint: { ...type.micro, color: colors.textDim, fontSize: 9, letterSpacing: 0.5 },
+  budgetPill: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(124, 140, 255, 0.3)',
+    backgroundColor: 'rgba(124, 140, 255, 0.10)',
+  },
+  budgetPillOff: { borderColor: colors.border, backgroundColor: 'transparent' },
+  budgetPillText: { ...type.micro, color: colors.accent, fontWeight: '700', fontSize: 9, letterSpacing: 0.5 },
 });

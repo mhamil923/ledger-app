@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -10,11 +10,12 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { TransactionRow } from '../../components/TransactionRow';
+import { CategorizeSheet } from '../../components/CategorizeSheet';
 import {
   apiClient,
   ApiError,
@@ -33,8 +34,30 @@ const WINDOW_OPTIONS: { value: WindowDays; label: string }[] = [
 ];
 
 export default function SpendingScreen() {
+  const queryClient = useQueryClient();
+  const params = useLocalSearchParams<{
+    filter?: string;
+    category_id?: string;
+    category_name?: string;
+    month?: string;
+  }>();
   const [windowDays, setWindowDays] = useState<WindowDays>(30);
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
+  const [onlyUncategorized, setOnlyUncategorized] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<{ id: string; name: string } | null>(null);
+  const [monthFilter, setMonthFilter] = useState<string | null>(null);
+  const [selected, setSelected] = useState<BankTransaction | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Deep links from the Budget tab ("see transactions", "categorize").
+  useEffect(() => {
+    if (params.filter === 'uncategorized') setOnlyUncategorized(true);
+    if (params.category_id) {
+      setCategoryFilter({ id: params.category_id, name: params.category_name ?? 'Category' });
+      setOnlyUncategorized(false);
+    }
+    if (params.month) setMonthFilter(params.month);
+  }, [params.filter, params.category_id, params.category_name, params.month]);
 
   // Banking returns 503 if BANKING_ENC_KEY is unconfigured. We don't retry on
   // that — it's a permanent server-side gate, not a transient error.
@@ -45,15 +68,20 @@ export default function SpendingScreen() {
   });
 
   const txnsQuery = useQuery({
-    queryKey: ['bank-transactions', windowDays, accountFilter],
+    queryKey: ['transactions', windowDays, accountFilter, onlyUncategorized, categoryFilter?.id, monthFilter],
     queryFn: () =>
-      apiClient.getBankTransactions({
-        days: windowDays,
+      apiClient.getTransactions({
+        days: monthFilter ? undefined : windowDays,
+        month: monthFilter ?? undefined,
         account_id: accountFilter ?? undefined,
-        limit: 500,
+        category_id: categoryFilter?.id,
+        uncategorized: onlyUncategorized,
+        limit: 1000,
       }),
     retry: (n, err) => !(err instanceof ApiError && err.status === 503) && n < 2,
   });
+
+  const categoriesQuery = useQuery({ queryKey: ['categories'], queryFn: apiClient.getCategories });
 
   const refetchAccounts = accountsQuery.refetch;
   const refetchTxns = txnsQuery.refetch;
@@ -63,6 +91,12 @@ export default function SpendingScreen() {
       void refetchTxns();
     }, [refetchAccounts, refetchTxns]),
   );
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const bankingDisabled =
     (accountsQuery.isError && accountsQuery.error instanceof ApiError && accountsQuery.error.status === 503) ||
@@ -76,22 +110,21 @@ export default function SpendingScreen() {
   }, [accounts]);
   const txns = txnsQuery.data?.transactions ?? [];
 
-  // Spent = sum of negative amounts. Income = sum of positive amounts. We work
-  // Exclude transfers (credit-card payments, internal xfers) from spending
-  // stats so the number matches the Budget page. Users still see those rows
-  // in the list — just tagged as TRANSFER — but they don't inflate the total.
+  // Transfers (card payoffs, moves between your accounts) are excluded from
+  // BOTH spending and income, matching the Budget tab. Off-budget accounts
+  // (brokerage) are left out too.
   const stats = useMemo(() => {
     let spent = 0;
     let income = 0;
     let transfersExcluded = 0;
     for (const t of txns) {
-      if (t.amount < 0) {
-        if (t.is_transfer) {
-          transfersExcluded += -t.amount;
-        } else {
-          spent += -t.amount;
-        }
-      } else income += t.amount;
+      if (t.on_budget === false) continue;
+      if (t.is_transfer) {
+        if (t.amount < 0) transfersExcluded += -t.amount;
+        continue;
+      }
+      if (t.amount < 0) spent += -t.amount;
+      else income += t.amount;
     }
     return {
       spent,
@@ -103,6 +136,7 @@ export default function SpendingScreen() {
   }, [txns]);
 
   const initialLoading = txnsQuery.isLoading || accountsQuery.isLoading;
+  const periodLabel = monthFilter ? monthName(monthFilter) : `last ${windowDays}d`;
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
@@ -113,7 +147,7 @@ export default function SpendingScreen() {
           bankingDisabled
             ? 'Banking not configured'
             : txns.length > 0
-              ? `${txns.length} txn${txns.length === 1 ? '' : 's'} · last ${windowDays}d`
+              ? `${txns.length} txn${txns.length === 1 ? '' : 's'} · ${periodLabel}`
               : 'Connected accounts'
         }
       />
@@ -145,27 +179,53 @@ export default function SpendingScreen() {
           ItemSeparatorComponent={() => <View style={styles.sep} />}
           ListHeaderComponent={
             <View style={styles.headerStack}>
-              <StatsBlock stats={stats} windowDays={windowDays} />
-              <WindowChips value={windowDays} onChange={setWindowDays} />
+              <StatsBlock stats={stats} label={periodLabel.toUpperCase()} />
+              {monthFilter ? null : <WindowChips value={windowDays} onChange={setWindowDays} />}
+              <View style={styles.filterRow}>
+                <FilterChip
+                  label="Uncategorized"
+                  icon="help-circle-outline"
+                  active={onlyUncategorized}
+                  onPress={() => {
+                    setOnlyUncategorized(!onlyUncategorized);
+                    setCategoryFilter(null);
+                  }}
+                />
+                {categoryFilter ? (
+                  <FilterChip label={categoryFilter.name} icon="close" active onPress={() => setCategoryFilter(null)} />
+                ) : null}
+                {monthFilter ? (
+                  <FilterChip label={monthName(monthFilter)} icon="close" active onPress={() => setMonthFilter(null)} />
+                ) : null}
+              </View>
               <AccountChips
                 accounts={accounts}
                 value={accountFilter}
                 onChange={setAccountFilter}
               />
+              {toast ? (
+                <View style={styles.toast}>
+                  <Ionicons name="checkmark-circle" size={14} color={colors.positive} />
+                  <Text style={styles.toastText}>{toast}</Text>
+                </View>
+              ) : null}
             </View>
           }
           ListEmptyComponent={
             <View style={styles.empty}>
-              <Ionicons name="receipt-outline" size={28} color={colors.textMuted} />
-              <Text style={styles.emptyTitle}>No transactions in this window</Text>
+              <Ionicons name={onlyUncategorized ? 'checkmark-done-outline' : 'receipt-outline'} size={28} color={colors.textMuted} />
+              <Text style={styles.emptyTitle}>
+                {onlyUncategorized ? 'Everything is categorized' : 'No transactions in this window'}
+              </Text>
               <Text style={styles.emptyDesc}>
-                Try widening the date range, removing the account filter, or syncing your bank
-                from the Accounts tab.
+                {onlyUncategorized
+                  ? 'Nice. New transactions are filed by your rules (and Claude) on every sync.'
+                  : 'Try widening the date range, removing a filter, or syncing your bank from the Accounts tab.'}
               </Text>
             </View>
           }
           renderItem={({ item }) => (
-            <TransactionRow txn={item} account={accountById.get(item.account_id)} />
+            <TransactionRow txn={item} account={accountById.get(item.account_id)} onPress={() => setSelected(item)} />
           )}
           refreshControl={
             <RefreshControl
@@ -176,13 +236,49 @@ export default function SpendingScreen() {
           }
         />
       )}
+
+      <CategorizeSheet
+        txn={selected}
+        categories={categoriesQuery.data?.categories ?? []}
+        onClose={() => setSelected(null)}
+        onSaved={(message) => {
+          if (message) setToast(message);
+          void queryClient.invalidateQueries({ queryKey: ['transactions'] });
+          void queryClient.invalidateQueries({ queryKey: ['budget'] });
+          void queryClient.invalidateQueries({ queryKey: ['overview'] });
+        }}
+      />
     </SafeAreaView>
+  );
+}
+
+function monthName(month: string): string {
+  const [y, m] = month.split('-').map(Number);
+  return new Date(Date.UTC(y!, m! - 1, 1)).toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
+
+function FilterChip({
+  label,
+  icon,
+  active,
+  onPress,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable onPress={onPress} style={[styles.acctChip, active && styles.acctChipActive, styles.filterChip]}>
+      <Ionicons name={icon} size={12} color={active ? colors.bg : colors.textMuted} />
+      <Text style={[styles.acctChipText, active && styles.chipTextActive]}>{label}</Text>
+    </Pressable>
   );
 }
 
 function StatsBlock({
   stats,
-  windowDays,
+  label,
 }: {
   stats: {
     spent: number;
@@ -191,11 +287,11 @@ function StatsBlock({
     count: number;
     transfers_excluded: number;
   };
-  windowDays: WindowDays;
+  label: string;
 }) {
   return (
     <View style={styles.statsCard}>
-      <Text style={styles.statsLabel}>LAST {windowDays} DAYS</Text>
+      <Text style={styles.statsLabel}>{label}</Text>
       <Text style={styles.statsSpent}>−{formatPrice(stats.spent)}</Text>
       <View style={styles.statsRow}>
         <View style={styles.statCell}>
@@ -440,4 +536,17 @@ const styles = StyleSheet.create({
   },
   acctChipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
   acctChipText: { ...type.micro, color: colors.textMuted, fontWeight: '600' },
+  filterRow: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  filterChip: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  toast: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    padding: spacing.sm,
+    borderRadius: radius.sm,
+    backgroundColor: 'rgba(34, 197, 94, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.25)',
+  },
+  toastText: { ...type.micro, color: colors.text, flex: 1 },
 });

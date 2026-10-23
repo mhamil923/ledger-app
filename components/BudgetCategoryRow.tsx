@@ -1,86 +1,82 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { BudgetCategory } from '../lib/api';
+import type { EnvelopeCategory } from '../lib/api';
 import { formatPrice } from '../lib/format';
 import { colors, radius, spacing, type } from '../theme/colors';
 
 interface Props {
-  category: BudgetCategory;
-  spent: number;
-  onEdit: () => void;
-  onDelete: () => void;
+  category: EnvelopeCategory;
+  onPress: () => void;
+}
+
+export function formatMoney(value: number): string {
+  const abs = Math.abs(value);
+  const s = `$${abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return value < 0 ? `−${s}` : s;
 }
 
 /**
- * Single category row with a horizontal progress bar showing how much of the
- * monthly limit has been spent. Bar turns orange at 80%, red past 100%.
+ * One envelope: Budgeted / Spent / Available, like Actual's budget table.
+ * The Available pill is green when there's money left, amber when it's
+ * empty and red when overspent.
  */
-export function BudgetCategoryRow({ category, spent, onEdit, onDelete }: Props) {
-  const limit = category.monthly_limit;
-  const pct = limit > 0 ? spent / limit : 0;
-  const clamped = Math.max(0, Math.min(1, pct));
-  const barColor =
-    pct > 1 ? colors.negative : pct >= 0.8 ? colors.warning : colors.positive;
+export function BudgetCategoryRow({ category, onPress }: Props) {
+  const { budgeted, activity, balance, carryover } = category;
+  const spent = -activity;
+  const funds = Math.max(0, carryover + budgeted);
+  const pct = funds > 0 ? Math.max(0, Math.min(1, spent / funds)) : spent > 0 ? 1 : 0;
+  const over = balance < -0.004;
+  const empty = !over && Math.abs(balance) < 0.005;
+  const pillBg = over ? 'rgba(239, 68, 68, 0.14)' : empty ? colors.bgElevated : 'rgba(34, 197, 94, 0.12)';
+  const pillFg = over ? colors.negative : empty ? colors.textDim : colors.positive;
+  const barColor = over ? colors.negative : pct > 0.85 ? colors.warning : colors.accent;
 
   return (
-    <View style={styles.row}>
-      <View style={styles.headerLine}>
-        <Text style={styles.name} numberOfLines={1}>
-          {category.name}
-        </Text>
-        <View style={styles.actions}>
-          <Pressable
-            onPress={onEdit}
-            hitSlop={8}
-            style={({ pressed }) => [styles.actionBtn, pressed && { opacity: 0.6 }]}
-          >
-            <Ionicons name="create-outline" size={14} color={colors.textMuted} />
-          </Pressable>
-          <Pressable
-            onPress={onDelete}
-            hitSlop={8}
-            style={({ pressed }) => [styles.actionBtn, pressed && { opacity: 0.6 }]}
-          >
-            <Ionicons name="trash-outline" size={14} color={colors.negative} />
-          </Pressable>
-        </View>
-      </View>
-
-      <View style={styles.amounts}>
-        <Text style={[styles.spent, pct > 1 && { color: colors.negative }]}>
-          {formatPrice(spent)}
-        </Text>
-        <Text style={styles.limit}>of {formatPrice(limit)}</Text>
-        <View style={{ flex: 1 }} />
-        <Text style={[styles.pct, { color: barColor }]}>{Math.round(pct * 100)}%</Text>
-      </View>
-
-      <View style={styles.barBg}>
-        <View
-          style={[
-            styles.barFill,
-            {
-              width: `${clamped * 100}%`,
-              backgroundColor: barColor,
-            },
-          ]}
-        />
-      </View>
-
-      {category.match_patterns.length > 0 ? (
-        <View style={styles.patternRow}>
-          <Ionicons name="pricetag-outline" size={10} color={colors.textDim} />
-          <Text style={styles.patternText} numberOfLines={1}>
-            {category.match_patterns.join(', ')}
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.row, pressed && { opacity: 0.75 }]}
+      accessibilityRole="button"
+      accessibilityLabel={`${category.name}, ${formatMoney(balance)} available`}
+    >
+      <View style={styles.top}>
+        <View style={styles.nameWrap}>
+          <Text style={styles.name} numberOfLines={1}>
+            {category.name}
           </Text>
+          {category.bill ? (
+            <Text style={styles.billMeta} numberOfLines={1}>
+              {category.bill.cadence} · {formatPrice(category.bill.amount)}
+              {category.bill.next_due_date ? ` · due ${shortDate(category.bill.next_due_date)}` : ''}
+            </Text>
+          ) : null}
         </View>
-      ) : (
-        <Text style={styles.noPatternHint}>
-          No match patterns — add some to auto-count transactions
+        <View style={[styles.pill, { backgroundColor: pillBg }]}>
+          <Text style={[styles.pillText, { color: pillFg }]}>{formatMoney(balance)}</Text>
+        </View>
+      </View>
+      <View style={styles.barBg}>
+        <View style={[styles.barFill, { width: `${pct * 100}%`, backgroundColor: barColor }]} />
+      </View>
+      <View style={styles.meta}>
+        <Text style={styles.metaText}>
+          Budgeted <Text style={styles.metaNum}>{formatMoney(budgeted)}</Text>
         </Text>
-      )}
-    </View>
+        <Text style={styles.metaText}>
+          Spent <Text style={styles.metaNum}>{formatMoney(spent)}</Text>
+        </Text>
+        {Math.abs(carryover) >= 0.005 ? (
+          <Text style={styles.metaText}>
+            <Ionicons name="return-down-forward" size={10} color={colors.textDim} /> {formatMoney(carryover)}
+          </Text>
+        ) : null}
+      </View>
+    </Pressable>
   );
+}
+
+function shortDate(iso: string): string {
+  const d = new Date(`${iso}T12:00:00`);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 const styles = StyleSheet.create({
@@ -91,59 +87,17 @@ const styles = StyleSheet.create({
     borderColor: colors.borderSubtle,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    gap: spacing.xs + 2,
+    gap: spacing.sm,
   },
-  headerLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  name: { ...type.heading, color: colors.text, fontSize: 14, flex: 1 },
-  actions: { flexDirection: 'row', gap: 4 },
-  actionBtn: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: colors.bgElevated,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  amounts: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.xs },
-  spent: {
-    ...type.heading,
-    color: colors.text,
-    fontVariant: ['tabular-nums' as const],
-    fontSize: 15,
-  },
-  limit: {
-    ...type.caption,
-    color: colors.textMuted,
-    fontVariant: ['tabular-nums' as const],
-  },
-  pct: { ...type.micro, fontWeight: '700', letterSpacing: 0.4 },
-
-  barBg: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.bgElevated,
-    overflow: 'hidden',
-  },
+  top: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  nameWrap: { flex: 1, gap: 1 },
+  name: { ...type.heading, color: colors.text, fontSize: 15 },
+  billMeta: { ...type.micro, color: colors.textDim, textTransform: 'capitalize' },
+  pill: { paddingHorizontal: spacing.sm + 2, paddingVertical: 4, borderRadius: radius.sm },
+  pillText: { ...type.caption, fontWeight: '700', fontVariant: ['tabular-nums' as const] },
+  barBg: { height: 5, borderRadius: 3, backgroundColor: colors.bgElevated, overflow: 'hidden' },
   barFill: { height: '100%', borderRadius: 3 },
-
-  patternRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 2,
-  },
-  patternText: {
-    ...type.micro,
-    color: colors.textDim,
-    flex: 1,
-    fontSize: 10,
-  },
-  noPatternHint: {
-    ...type.micro,
-    color: colors.textDim,
-    fontStyle: 'italic',
-    fontSize: 10,
-    marginTop: 2,
-  },
+  meta: { flexDirection: 'row', gap: spacing.lg, flexWrap: 'wrap' },
+  metaText: { ...type.micro, color: colors.textDim },
+  metaNum: { color: colors.textMuted, fontVariant: ['tabular-nums' as const] },
 });
