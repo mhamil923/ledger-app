@@ -1,5 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { MeasuredOddsBadge } from './MeasuredOdds';
 import type { AnalysisData, AssetType, EntryKind } from '../lib/api';
 import { formatPrice } from '../lib/format';
 import { colors, radius, spacing, type } from '../theme/colors';
@@ -32,6 +33,8 @@ interface Props {
   /** Latest live price for status calculations (TRIGGERED / IN ZONE / etc). */
   livePrice?: number | null;
   onTakeTrade?: () => void;
+  /** Conservative measured win rate an idea needs to count as a trade. */
+  minWinRate?: number;
 }
 
 export function TradeIdeaCard({
@@ -40,6 +43,7 @@ export function TradeIdeaCard({
   selectedHorizon,
   livePrice,
   onTakeTrade,
+  minWinRate = 0.6,
 }: Props) {
   const biasColor = BIAS_COLOR[data.bias] ?? colors.textMuted;
   const horizon = selectedHorizon ?? data.primary_horizon ?? data.time_horizon;
@@ -76,6 +80,8 @@ export function TradeIdeaCard({
         </View>
         <Text style={styles.headline}>{data.headline}</Text>
       </View>
+
+      <MeasuredOddsBadge idea={tradeIdea} minWinRate={minWinRate} horizon={horizon} />
 
       {tradeIdea ? (
         <TradePlan

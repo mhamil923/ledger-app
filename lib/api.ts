@@ -179,6 +179,35 @@ export interface TradeIdea {
   entry_kind?: EntryKind;
   /** Per-horizon conviction 1-5 (only present on multi-horizon responses). */
   conviction?: number;
+  /** Quant setup this idea comes from ('none' = watch only). */
+  setup_id?: string;
+  /** Measured on this asset's own price history. Absent/null = not backtested. */
+  backtest?: {
+    label: string;
+    n: number;
+    win_rate: number;
+    win_rate_lower: number;
+    avg_r: number;
+    t2_rate: number;
+  } | null;
+}
+
+export interface QuantSummary {
+  regime: { daily: string | null; hourly: string | null };
+  atr_pct_daily: number | null;
+  support: number[];
+  resistance: number[];
+  next_earnings: string | null;
+  backtests: Array<{
+    horizon: string;
+    setup_id: string;
+    label: string;
+    direction: string;
+    n: number;
+    win_rate: number;
+    win_rate_lower: number;
+    avg_r: number;
+  }>;
 }
 
 export interface TradeIdeasByHorizon {
@@ -244,6 +273,7 @@ export interface AnalysisData {
   position_sizing?: string;
   indicators?: IndicatorSnapshot;
   sentiment?: MarketSentiment | null;
+  quant?: QuantSummary | null;
 }
 
 export interface AnalysisResponse {
@@ -300,6 +330,11 @@ export interface TradeSummary {
   expired: number;
   win_rate_pct: number;
   recent: TradeIdeaRecord[];
+  /** Closed ideas: quant-grounded ('measured') vs older eyeballed ('legacy'). */
+  scorecard?: Record<
+    'measured' | 'legacy',
+    { closed: number; wins: number; win_rate: number; predicted_win_rate: number | null; avg_pnl_pct: number | null }
+  >;
 }
 
 export interface HoldingSummary {

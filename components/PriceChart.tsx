@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type {
@@ -14,7 +14,7 @@ import type {
 import { formatPrice } from '../lib/format';
 import { colors, radius, spacing, type } from '../theme/colors';
 import { LivePulse } from './LivePulse';
-import { TVChart } from './TVChart';
+import { TVChart, type TVChartHandle } from './TVChart';
 import type { TVChartData } from '../lib/tvchart-renderer';
 
 export interface HorizontalLevel {
@@ -154,6 +154,7 @@ export function PriceChart({
     }),
     [points, candles, overlays, volumes, indicatorSeries, levels, range, chartType, useCandles],
   );
+  const chartRef = useRef<TVChartHandle>(null);
   const onCrosshair = useCallback(
     (ts: number | null): void => {
       if (ts == null || points.length === 0) {
@@ -255,7 +256,14 @@ export function PriceChart({
 
       <View style={[styles.chartContainer, { height: TOTAL_H }]}>
         {hasData ? (
-          <TVChart data={tvData} height={TOTAL_H} onCrosshair={onCrosshair} />
+          <>
+            <TVChart ref={chartRef} data={tvData} height={TOTAL_H} onCrosshair={onCrosshair} />
+            <View style={styles.zoomCol} pointerEvents="box-none">
+              <ZoomBtn icon="add" label="Zoom in" onPress={() => chartRef.current?.zoom(1.6)} />
+              <ZoomBtn icon="remove" label="Zoom out" onPress={() => chartRef.current?.zoom(1 / 1.6)} />
+              <ZoomBtn icon="scan-outline" label="Fit all" onPress={() => chartRef.current?.fit()} />
+            </View>
+          </>
         ) : !loading ? (
           <View style={styles.placeholder}>
             <Ionicons name="bar-chart-outline" size={28} color={colors.textDim} />
@@ -297,6 +305,27 @@ export function PriceChart({
         </View>
       ) : null}
     </View>
+  );
+}
+
+function ZoomBtn({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={4}
+      accessibilityLabel={label}
+      style={({ pressed }) => [styles.zoomBtn, pressed && { opacity: 0.6 }]}
+    >
+      <Ionicons name={icon} size={14} color={colors.text} />
+    </Pressable>
   );
 }
 
@@ -402,4 +431,15 @@ const styles = StyleSheet.create({
   },
   typePillActive: { backgroundColor: colors.accent },
   typePillPressed: { backgroundColor: colors.bgElevated },
+  zoomCol: { position: 'absolute', top: 8, left: 8, gap: 4 },
+  zoomBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(24, 24, 27, 0.85)',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
 });

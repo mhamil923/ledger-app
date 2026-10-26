@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { LIGHTWEIGHT_CHARTS_VERSION, RENDER_BODY, type TVChartData } from '../lib/tvchart-renderer';
+
+export interface TVChartHandle {
+  zoom: (factor: number) => void;
+  fit: () => void;
+}
 
 interface Props {
   data: TVChartData;
@@ -11,27 +16,24 @@ interface Props {
 
 /**
  * iOS / Android: TradingView Lightweight Charts inside a WebView (the library
- * needs a DOM). Data is pushed in with injectJavaScript; crosshair moves come
- * back with postMessage. (Web uses TVChart.web.tsx instead.)
+ * needs a DOM). The chart is created once in the page; data updates are
+ * injected and applied in place, so pinch-zoom survives the live refresh.
+ * (Web uses TVChart.web.tsx instead.)
  */
-export function TVChart({ data, height, onCrosshair }: Props) {
+export const TVChart = forwardRef<TVChartHandle, Props>(function TVChart({ data, height, onCrosshair }, ref) {
   const webRef = useRef<WebView>(null);
   const [ready, setReady] = useState(false);
 
   const html = useMemo(
     () => `<!doctype html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<style>html,body,#c{margin:0;padding:0;height:100%;width:100%;background:${data.colors.bg};overflow:hidden}</style>
+<style>html,body,#c{margin:0;padding:0;height:100%;width:100%;background:${data.colors.bg};overflow:hidden;touch-action:none}</style>
 <script src="https://unpkg.com/lightweight-charts@${LIGHTWEIGHT_CHARTS_VERSION}/dist/lightweight-charts.standalone.production.js"></script>
 </head><body><div id="c"></div><script>
-var render = function (LightweightCharts, container, data, onCrosshair) {${RENDER_BODY}};
-var current = null;
-window.__draw = function (data) {
-  if (current) current.destroy();
-  current = render(LightweightCharts, document.getElementById('c'), data, function (ts) {
-    window.ReactNativeWebView.postMessage(JSON.stringify({ ts: ts }));
-  });
-};
+var create = function (LightweightCharts, container, onCrosshair) {${RENDER_BODY}};
+window.__chart = create(LightweightCharts, document.getElementById('c'), function (ts) {
+  window.ReactNativeWebView.postMessage(JSON.stringify({ ts: ts }));
+});
 </script></body></html>`,
     // The page only needs rebuilding if the background color changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -40,8 +42,13 @@ window.__draw = function (data) {
 
   useEffect(() => {
     if (!ready) return;
-    webRef.current?.injectJavaScript(`window.__draw(${JSON.stringify(data)}); true;`);
+    webRef.current?.injectJavaScript(`window.__chart && window.__chart.setData(${JSON.stringify(data)}); true;`);
   }, [data, ready]);
+
+  useImperativeHandle(ref, () => ({
+    zoom: (f) => webRef.current?.injectJavaScript(`window.__chart && window.__chart.zoom(${Number(f)}); true;`),
+    fit: () => webRef.current?.injectJavaScript('window.__chart && window.__chart.fit(); true;'),
+  }));
 
   const onMessage = (e: WebViewMessageEvent): void => {
     try {
@@ -67,4 +74,4 @@ window.__draw = function (data) {
       />
     </View>
   );
-}
+});

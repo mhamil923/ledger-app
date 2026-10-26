@@ -25,11 +25,14 @@ import {
   type VolumePoint,
   type WatchlistItem,
 } from '../lib/api';
+import { QuantPanel } from './MeasuredOdds';
+import { useMinWinRate } from '../lib/prefs';
 import { PriceChart, type HorizontalLevel } from './PriceChart';
 import { TradeIdeaCard } from './TradeIdeaCard';
 import { DeepDiveExtras } from './DeepDiveExtras';
 import { MarketContextStrip } from './MarketContextStrip';
 import { RecentTradesPanel } from './RecentTradesPanel';
+import { Scorecard } from './Scorecard';
 import { ExecuteOrderModal } from './ExecuteOrderModal';
 import { colors, radius, spacing, type } from '../theme/colors';
 
@@ -45,6 +48,7 @@ export function AnalysisModal({ visible, item, onClose }: Props) {
   // modal opens for a different item.
   const [analysisCache, setAnalysisCache] = useState<Record<string, AnalysisResponse>>({});
   const [executeOpen, setExecuteOpen] = useState(false);
+  const [minWinRate, setMinWinRate] = useMinWinRate();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -379,13 +383,21 @@ export function AnalysisModal({ visible, item, onClose }: Props) {
                     selectedHorizon={horizon}
                     livePrice={livePrice}
                     onTakeTrade={() => setExecuteOpen(true)}
+                    minWinRate={minWinRate}
                   />
+                ) : null}
+
+                {data.data?.quant ? (
+                  <QuantPanel quant={data.data.quant} minWinRate={minWinRate} onMinWinRate={setMinWinRate} />
                 ) : null}
 
                 {data.data ? <DeepDiveExtras data={data.data} /> : null}
 
                 {item ? (
-                  <RecentTradesPanel symbol={item.symbol} assetType={item.asset_type} />
+                  <>
+                    <RecentTradesPanel symbol={item.symbol} assetType={item.asset_type} />
+                    <Scorecard />
+                  </>
                 ) : null}
 
                 {/* Prose summary — fallback for legacy cached rows without structured data */}
