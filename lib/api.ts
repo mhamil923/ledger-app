@@ -153,6 +153,20 @@ export interface Candle {
 }
 
 export type ChartRange = '1d' | '7d' | '30d' | '90d' | '1y';
+/** Candle size for the chart; history loads further back as you scroll. */
+export type ChartInterval = '5m' | '15m' | '1h' | '4h' | '1d' | '1w';
+
+export interface HistoryCandle extends Candle {
+  volume: number;
+}
+
+export interface ChartHistoryPage {
+  symbol: string;
+  interval: ChartInterval;
+  candles: HistoryCandle[];
+  has_more: boolean;
+  source: 'coinbase' | 'twelvedata' | 'unavailable';
+}
 export type ChartType = 'line' | 'area' | 'candle';
 
 export interface ChartResponse {
@@ -563,6 +577,22 @@ export const apiClient = {
     });
     if (params.external_id) q.set('external_id', params.external_id);
     return api<ChartResponse>(`/api/chart?${q.toString()}`);
+  },
+  getChartHistory: (params: {
+    symbol: string;
+    asset_type: AssetType;
+    interval: ChartInterval;
+    before?: number;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams({
+      symbol: params.symbol,
+      asset_type: params.asset_type,
+      interval: params.interval,
+      limit: String(params.limit ?? 300),
+    });
+    if (params.before) q.set('before', String(params.before));
+    return api<ChartHistoryPage>(`/api/chart/history?${q.toString()}`);
   },
   searchAssets: (query: string, types?: AssetType[]) => {
     const params = new URLSearchParams({ q: query });

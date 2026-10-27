@@ -6,7 +6,10 @@
 // WebView that loads the standalone build). Hermes can't stringify compiled
 // functions, hence the string.
 //
-// Signature: (LightweightCharts, container, onCrosshair) => controller
+// Signature: (LightweightCharts, container, onCrosshair, onNeedMore) => controller
+//   onNeedMore()              — called when the view nears the oldest loaded
+//                               candle; the app fetches the next older page and
+//                               calls setData again (the view stays anchored).
 //   controller.setData(data)  — first call builds the chart; later calls update
 //                               the series IN PLACE, so zoom/scroll survive the
 //                               live refresh. Rebuilds only if the layout
@@ -30,6 +33,9 @@ export interface TVChartData {
   intraday: boolean;
   /** Minutes east of UTC, so the time axis shows local time. */
   tzOffsetMinutes: number;
+  /** More (older) history can still be loaded. When false, the chart stops
+   *  you from scrolling past the first candle. */
+  hasMore?: boolean;
   colors: { bg: string; text: string; grid: string; up: string; down: string; rsi: string };
 }
 
@@ -43,7 +49,7 @@ export interface TVChartController {
 export const RENDER_BODY = `
   var LC = LightweightCharts;
   var chart = null, main = null, overlaySeries = {}, vol = null, rsiS = null, priceLines = [];
-  var layoutKey = '', off = 0, fitted = false, userMoved = false;
+  var layoutKey = '', off = 0, fitted = false, userMoved = false, firstTime = null;
 
   function t(ms) { return Math.floor(ms / 1000) + off; }
   function uniq(rows) {
@@ -68,7 +74,7 @@ export const RENDER_BODY = `
 
   function build(d) {
     if (chart) { chart.remove(); }
-    overlaySeries = {}; vol = null; rsiS = null; priceLines = []; fitted = false; userMoved = false;
+    overlaySeries = {}; vol = null; rsiS = null; priceLines = []; fitted = false; userMoved = false; firstTime = null;
     var c = d.colors;
     chart = LC.createChart(container, {
       autoSize: true,
@@ -125,7 +131,11 @@ export const RENDER_BODY = `
       onCrosshair(p && p.time != null && p.point ? (p.time - off) * 1000 : null);
     });
     // Remember that the user zoomed/scrolled so refreshes don't snap back.
-    chart.timeScale().subscribeVisibleLogicalRangeChange(function () { if (fitted) userMoved = true; });
+    chart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
+      if (fitted) userMoved = true;
+      // Near the oldest loaded candle → ask the app for more history.
+      if (r && r.from < 25 && typeof onNeedMore === 'function') onNeedMore();
+    });
   }
 
   function update(d) {
@@ -133,14 +143,19 @@ export const RENDER_BODY = `
     var c = d.colors;
     var useC = d.mode === 'candle' && d.candles && d.candles.length > 0;
     var first = 0, lastP = 0;
+    // Capture the view BEFORE replacing data, so prepending older history
+    // can shift the logical range and keep the same candles on screen.
+    var prevRange = fitted ? chart.timeScale().getVisibleLogicalRange() : null;
+    var prevFirst = firstTime;
+    var rows;
     if (useC) {
-      var cs = uniq(d.candles.map(function (k) { return { time: t(k.ts), open: k.open, high: k.high, low: k.low, close: k.close }; }));
-      main.setData(cs);
-      if (cs.length) { first = cs[0].open; lastP = cs[cs.length - 1].close; }
+      rows = uniq(d.candles.map(function (k) { return { time: t(k.ts), open: k.open, high: k.high, low: k.low, close: k.close }; }));
+      main.setData(rows);
+      if (rows.length) { first = rows[0].open; lastP = rows[rows.length - 1].close; }
     } else {
-      var ps = uniq(d.points.map(function (p) { return { time: t(p.ts), value: p.price }; }));
-      main.setData(ps);
-      if (ps.length) { first = ps[0].value; lastP = ps[ps.length - 1].value; }
+      rows = uniq(d.points.map(function (p) { return { time: t(p.ts), value: p.price }; }));
+      main.setData(rows);
+      if (rows.length) { first = rows[0].value; lastP = rows[rows.length - 1].value; }
       var color = lastP >= first ? c.up : c.down;
       if (d.mode === 'area') main.applyOptions({ lineColor: color, topColor: alpha(color, 0.28), bottomColor: alpha(color, 0) });
       else main.applyOptions({ color: color });
@@ -168,7 +183,25 @@ export const RENDER_BODY = `
       })));
     }
     if (rsiS) rsiS.setData(uniq(d.rsi.map(function (p) { return { time: t(p.ts), value: p.value }; })));
-    if (!fitted || !userMoved) { chart.timeScale().fitContent(); }
+    var newFirst = rows && rows.length ? rows[0].time : null;
+    var added = 0;
+    if (prevFirst != null && newFirst != null && newFirst < prevFirst) {
+      for (var i = 0; i < rows.length && rows[i].time < prevFirst; i++) added++;
+    }
+    firstTime = newFirst;
+    // While older history exists, let the view run past the first candle
+    // (that's what triggers loading more); once it's all loaded, pin it.
+    chart.timeScale().applyOptions({ fixLeftEdge: d.hasMore === false });
+    if (!fitted) {
+      // First paint: show the most recent ~150 candles; scroll back for more.
+      var n = rows ? rows.length : 0;
+      if (n > 150) chart.timeScale().setVisibleLogicalRange({ from: n - 150, to: n + 2 });
+      else chart.timeScale().fitContent();
+    } else if (added > 0 && prevRange) {
+      chart.timeScale().setVisibleLogicalRange({ from: prevRange.from + added, to: prevRange.to + added });
+    } else if (!userMoved) {
+      chart.timeScale().fitContent();
+    }
     fitted = true;
   }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -17,7 +17,7 @@ import {
   type Candle,
   type ChartOverlay,
   type ChartPoint,
-  type ChartRange,
+  type ChartInterval,
   type ChartType,
   type IndicatorSeries,
   type ModelTier,
@@ -32,6 +32,8 @@ import { TradeIdeaCard } from './TradeIdeaCard';
 import { DeepDiveExtras } from './DeepDiveExtras';
 import { MarketContextStrip } from './MarketContextStrip';
 import { RecentTradesPanel } from './RecentTradesPanel';
+import { useChartHistory } from './useChartHistory';
+import { rsiSeries, smaSeries } from '../lib/chart-indicators';
 import { Scorecard } from './Scorecard';
 import { ExecuteOrderModal } from './ExecuteOrderModal';
 import { colors, radius, spacing, type } from '../theme/colors';
@@ -52,16 +54,32 @@ export function AnalysisModal({ visible, item, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const [chartPoints, setChartPoints] = useState<ChartPoint[]>([]);
-  const [chartCandles, setChartCandles] = useState<Candle[]>([]);
-  const [chartOverlays, setChartOverlays] = useState<ChartOverlay[]>([]);
-  const [chartVolumes, setChartVolumes] = useState<VolumePoint[]>([]);
-  const [chartIndicatorSeries, setChartIndicatorSeries] = useState<IndicatorSeries[]>([]);
-  const [chartRange, setChartRange] = useState<ChartRange>('30d');
-  const [chartType, setChartType] = useState<ChartType>('area');
-  const [chartLoading, setChartLoading] = useState(false);
-  const [chartError, setChartError] = useState<string | null>(null);
-  const [chartUnavailable, setChartUnavailable] = useState(false);
+  const [chartInterval, setChartInterval] = useState<ChartInterval>('1d');
+  const [chartType, setChartType] = useState<ChartType>('candle');
+  const history = useChartHistory(item, chartInterval, visible);
+  // Everything the chart draws is derived from the loaded candle history, so
+  // SMA/RSI/volume extend automatically as older pages load.
+  const chartDerived = useMemo(() => {
+    const cs = history.candles;
+    const ts = cs.map((c) => c.ts);
+    const closes = cs.map((c) => c.close);
+    const overlays: ChartOverlay[] = [];
+    if (cs.length >= 20) overlays.push({ key: 'sma20', label: 'SMA 20', points: smaSeries(ts, closes, 20) });
+    if (cs.length >= 50) overlays.push({ key: 'sma50', label: 'SMA 50', points: smaSeries(ts, closes, 50) });
+    return {
+      points: cs.map((c) => ({ ts: c.ts, price: c.close })) as ChartPoint[],
+      candles: cs as Candle[],
+      volumes: cs.map((c) => ({ ts: c.ts, value: c.volume })) as VolumePoint[],
+      overlays,
+      indicatorSeries: (cs.length > 15
+        ? [{ key: 'rsi14', label: 'RSI 14', points: rsiSeries(ts, closes, 14) }]
+        : []) as IndicatorSeries[],
+    };
+  }, [history.candles]);
+  const chartPoints = chartDerived.points;
+  const chartLoading = history.loading;
+  const chartError = history.error;
+  const chartUnavailable = history.unavailable;
   const [modelTier, setModelTier] = useState<ModelTier>('fast');
   const [horizon, setHorizon] = useState<AnalysisHorizon>('short_term');
 
@@ -70,8 +88,6 @@ export function AnalysisModal({ visible, item, onClose }: Props) {
 
   // Per-item request id so async responses from a previous item are ignored.
   const requestIdRef = useRef(0);
-  // Per-chart-fetch id so out-of-order range/type switches don't show stale data.
-  const chartReqIdRef = useRef(0);
 
   const loadAnalysis = useCallback(
     async (force: boolean, tierOverride?: ModelTier) => {
@@ -107,115 +123,18 @@ export function AnalysisModal({ visible, item, onClose }: Props) {
     [item, modelTier],
   );
 
-  const loadChart = useCallback(
-    async (range: ChartRange, type: ChartType, attempt = 0, fetchId?: number): Promise<void> => {
-      if (!item) return;
-      const itemId = requestIdRef.current;
-      // On the initial call, increment and capture the new chart-fetch id.
-      // Retries reuse the original id so they're still considered "current".
-      const myFetchId = fetchId ?? ++chartReqIdRef.current;
-      const MAX_ATTEMPTS = 4;
-      const apiType = type === 'candle' ? 'candle' : 'line';
-      if (attempt === 0) {
-        setChartLoading(true);
-        setChartError(null);
-      }
-      try {
-        const result = await apiClient.getChart({
-          symbol: item.symbol,
-          asset_type: item.asset_type,
-          external_id: item.external_id,
-          range,
-          chart_type: apiType,
-        });
-        // Reject if either the modal switched items, or a newer chart request superseded this one.
-        if (itemId !== requestIdRef.current || myFetchId !== chartReqIdRef.current) return;
-        if (result.source === 'unavailable') {
-          setChartUnavailable(true);
-          setChartPoints([]);
-          setChartCandles([]);
-          setChartOverlays([]);
-          setChartVolumes([]);
-          setChartIndicatorSeries([]);
-        } else {
-          setChartUnavailable(false);
-          setChartPoints(result.points);
-          setChartCandles(result.candles ?? []);
-          setChartOverlays(result.overlays ?? []);
-          setChartVolumes(result.volumes ?? []);
-          setChartIndicatorSeries(result.indicator_series ?? []);
-        }
-        setChartLoading(false);
-      } catch (err) {
-        if (itemId !== requestIdRef.current || myFetchId !== chartReqIdRef.current) return;
-        if (attempt < MAX_ATTEMPTS - 1) {
-          const delay = 1500 * Math.pow(2, attempt);
-          setTimeout(() => {
-            if (itemId === requestIdRef.current && myFetchId === chartReqIdRef.current) {
-              void loadChart(range, type, attempt + 1, myFetchId);
-            }
-          }, delay);
-          return;
-        }
-        setChartError(err instanceof Error ? err.message : 'Chart failed');
-        setChartPoints([]);
-        setChartCandles([]);
-        setChartLoading(false);
-      }
-    },
-    [item],
-  );
-
   useEffect(() => {
     if (visible && item) {
       requestIdRef.current++;
       setAnalysisCache({});
       setError(null);
       setLoading(false);
-      setChartPoints([]);
-      setChartOverlays([]);
-      setChartVolumes([]);
-      setChartIndicatorSeries([]);
-      setChartUnavailable(false);
-      setChartError(null);
-      setChartRange('30d');
-      setChartType('area');
-      setChartCandles([]);
       void loadAnalysis(false);
-      void loadChart('30d', 'area');
     }
-  }, [visible, item, loadAnalysis, loadChart]);
+  }, [visible, item, loadAnalysis]);
 
-  const handleRangeChange = (range: ChartRange): void => {
-    setChartRange(range);
-    void loadChart(range, chartType);
-  };
-
-  // Auto-refresh the chart while the modal is open so it feels "live".
-  // 1d range refreshes every 15s (we're tracking minute-by-minute price action);
-  // longer ranges refresh every 60s (slower-moving data, less point in spamming).
-  // Pauses when the tab/window isn't visible — no point burning API calls on a hidden tab.
-  useEffect(() => {
-    if (!visible || !item) return;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    const intervalMs = chartRange === '1d' ? 15_000 : 60_000;
-    const tick = (): void => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      void loadChart(chartRange, chartType);
-    };
-    const handle = setInterval(tick, intervalMs);
-    return () => clearInterval(handle);
-  }, [visible, item, chartRange, chartType, loadChart]);
-
-  const handleChartTypeChange = (next: ChartType): void => {
-    setChartType(next);
-    // Refetch only if we need a different API payload (line ↔ candle).
-    const wasCandle = chartType === 'candle';
-    const isCandle = next === 'candle';
-    if (wasCandle !== isCandle) {
-      void loadChart(chartRange, next);
-    }
-  };
+  // The chart's own hook (useChartHistory) handles live refresh and paging.
+  const handleChartTypeChange = (next: ChartType): void => setChartType(next);
 
   // Latest price from the live-polling chart. Used both for trade status badge
   // and to decide whether to silently re-analyze.
@@ -335,14 +254,17 @@ export function AnalysisModal({ visible, item, onClose }: Props) {
               </View>
             ) : (
               <PriceChart
-                points={chartPoints}
-                candles={chartCandles}
-                overlays={chartOverlays}
-                volumes={chartVolumes}
-                indicatorSeries={chartIndicatorSeries}
+                points={chartDerived.points}
+                candles={chartDerived.candles}
+                overlays={chartDerived.overlays}
+                volumes={chartDerived.volumes}
+                indicatorSeries={chartDerived.indicatorSeries}
                 levels={levels}
-                range={chartRange}
-                onRangeChange={handleRangeChange}
+                interval={chartInterval}
+                onIntervalChange={setChartInterval}
+                onNeedMore={history.loadMore}
+                loadingMore={history.loadingMore}
+                hasMore={history.hasMore}
                 chartType={chartType}
                 onChartTypeChange={handleChartTypeChange}
                 loading={chartLoading}

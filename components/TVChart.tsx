@@ -12,6 +12,8 @@ interface Props {
   data: TVChartData;
   height: number;
   onCrosshair?: (ts: number | null) => void;
+  /** Called when the view reaches the oldest loaded candle. */
+  onNeedMore?: () => void;
 }
 
 /**
@@ -20,7 +22,7 @@ interface Props {
  * injected and applied in place, so pinch-zoom survives the live refresh.
  * (Web uses TVChart.web.tsx instead.)
  */
-export const TVChart = forwardRef<TVChartHandle, Props>(function TVChart({ data, height, onCrosshair }, ref) {
+export const TVChart = forwardRef<TVChartHandle, Props>(function TVChart({ data, height, onCrosshair, onNeedMore }, ref) {
   const webRef = useRef<WebView>(null);
   const [ready, setReady] = useState(false);
 
@@ -30,9 +32,15 @@ export const TVChart = forwardRef<TVChartHandle, Props>(function TVChart({ data,
 <style>html,body,#c{margin:0;padding:0;height:100%;width:100%;background:${data.colors.bg};overflow:hidden;touch-action:none}</style>
 <script src="https://unpkg.com/lightweight-charts@${LIGHTWEIGHT_CHARTS_VERSION}/dist/lightweight-charts.standalone.production.js"></script>
 </head><body><div id="c"></div><script>
-var create = function (LightweightCharts, container, onCrosshair) {${RENDER_BODY}};
+var create = function (LightweightCharts, container, onCrosshair, onNeedMore) {${RENDER_BODY}};
+var lastMore = 0;
 window.__chart = create(LightweightCharts, document.getElementById('c'), function (ts) {
   window.ReactNativeWebView.postMessage(JSON.stringify({ ts: ts }));
+}, function () {
+  var now = Date.now();
+  if (now - lastMore < 500) return;
+  lastMore = now;
+  window.ReactNativeWebView.postMessage(JSON.stringify({ more: true }));
 });
 </script></body></html>`,
     // The page only needs rebuilding if the background color changes.
@@ -52,8 +60,9 @@ window.__chart = create(LightweightCharts, document.getElementById('c'), functio
 
   const onMessage = (e: WebViewMessageEvent): void => {
     try {
-      const msg = JSON.parse(e.nativeEvent.data) as { ts: number | null };
-      onCrosshair?.(msg.ts);
+      const msg = JSON.parse(e.nativeEvent.data) as { ts?: number | null; more?: boolean };
+      if (msg.more) onNeedMore?.();
+      else onCrosshair?.(msg.ts ?? null);
     } catch {
       // ignore
     }

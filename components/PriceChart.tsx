@@ -5,8 +5,8 @@ import type {
   AssetType,
   Candle,
   ChartOverlay,
+  ChartInterval,
   ChartPoint,
-  ChartRange,
   ChartType,
   IndicatorSeries,
   VolumePoint,
@@ -31,8 +31,14 @@ interface Props {
   volumes?: VolumePoint[];
   indicatorSeries?: IndicatorSeries[];
   levels?: HorizontalLevel[];
-  range: ChartRange;
-  onRangeChange?: (range: ChartRange) => void;
+  /** Candle size. Older history loads automatically as you scroll/zoom back. */
+  interval: ChartInterval;
+  onIntervalChange?: (interval: ChartInterval) => void;
+  /** Called when the view reaches the oldest loaded candle. */
+  onNeedMore?: () => void;
+  loadingMore?: boolean;
+  /** False once the very first candle of the asset's history is loaded. */
+  hasMore?: boolean;
   chartType?: ChartType;
   onChartTypeChange?: (type: ChartType) => void;
   loading?: boolean;
@@ -42,7 +48,24 @@ interface Props {
   live?: boolean;
 }
 
-const RANGES: ChartRange[] = ['1d', '7d', '30d', '90d', '1y'];
+const INTERVALS: Array<{ id: ChartInterval; label: string }> = [
+  { id: '5m', label: '5m' },
+  { id: '15m', label: '15m' },
+  { id: '1h', label: '1H' },
+  { id: '4h', label: '4H' },
+  { id: '1d', label: '1D' },
+  { id: '1w', label: '1W' },
+];
+const INTRADAY = new Set<ChartInterval>(['5m', '15m', '1h', '4h']);
+/** Window the header's % change is measured over, per candle size. */
+const CHANGE_WINDOW: Record<ChartInterval, { ms: number; label: string }> = {
+  '5m': { ms: 86_400_000, label: '24 hours' },
+  '15m': { ms: 3 * 86_400_000, label: '3 days' },
+  '1h': { ms: 7 * 86_400_000, label: '7 days' },
+  '4h': { ms: 30 * 86_400_000, label: '30 days' },
+  '1d': { ms: 365 * 86_400_000, label: '1 year' },
+  '1w': { ms: 5 * 365 * 86_400_000, label: '5 years' },
+};
 
 const OVERLAY_COLOR: Record<string, string> = {
   sma20: '#7c8cff',
@@ -59,12 +82,19 @@ function tradingViewUrl(symbol: string, assetType: AssetType): string {
   return `https://www.tradingview.com/symbols/${symbol.toUpperCase()}/`;
 }
 
-function formatDate(ts: number, range: ChartRange): string {
+function formatDate(ts: number, interval: ChartInterval): string {
   const d = new Date(ts);
-  if (range === '1d') {
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  if (INTRADAY.has(interval)) {
+    return d.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      year: sameYear ? undefined : 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
   }
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: sameYear ? undefined : 'numeric' });
 }
 
 function formatVolume(value: number): string {
@@ -81,8 +111,11 @@ export function PriceChart({
   volumes = [],
   indicatorSeries = [],
   levels = [],
-  range,
-  onRangeChange,
+  interval,
+  onIntervalChange,
+  onNeedMore,
+  loadingMore,
+  hasMore = true,
   chartType = 'area',
   onChartTypeChange,
   loading,
@@ -97,9 +130,13 @@ export function PriceChart({
   // Header stats (the chart itself is drawn by TradingView Lightweight Charts).
   const layout = useMemo(() => {
     if (!points.length) return null;
-    const prices = useCandles ? candles.flatMap((c) => [c.high, c.low]) : points.map((p) => p.price);
-    const first = useCandles ? candles[0]!.open : points[0]!.price;
-    const last = useCandles ? candles[candles.length - 1]!.close : points[points.length - 1]!.price;
+    const cutoff = points[points.length - 1]!.ts - CHANGE_WINDOW[interval].ms;
+    const winPts = points.filter((p) => p.ts >= cutoff);
+    const winCandles = candles.filter((c) => c.ts >= cutoff);
+    const useWinCandles = useCandles && winCandles.length > 0;
+    const prices = useWinCandles ? winCandles.flatMap((c) => [c.high, c.low]) : winPts.map((p) => p.price);
+    const first = useWinCandles ? winCandles[0]!.open : winPts[0]!.price;
+    const last = points[points.length - 1]!.price;
     const change = last - first;
     return {
       positive: change >= 0,
@@ -109,7 +146,7 @@ export function PriceChart({
       maxPrice: Math.max(...prices),
       rsiSeries: indicatorSeries.find((x) => x.key === 'rsi14'),
     };
-  }, [points, candles, indicatorSeries, useCandles]);
+  }, [points, candles, indicatorSeries, useCandles, interval]);
 
 
   const hasData = !!layout;
@@ -141,7 +178,8 @@ export function PriceChart({
       volumes,
       rsi: indicatorSeries.find((x) => x.key === 'rsi14')?.points ?? [],
       levels,
-      intraday: range === '1d' || range === '7d',
+      intraday: INTRADAY.has(interval),
+      hasMore,
       tzOffsetMinutes: -new Date().getTimezoneOffset(),
       colors: {
         bg: colors.bgCard,
@@ -152,7 +190,7 @@ export function PriceChart({
         rsi: '#f59e0b',
       },
     }),
-    [points, candles, overlays, volumes, indicatorSeries, levels, range, chartType, useCandles],
+    [points, candles, overlays, volumes, indicatorSeries, levels, interval, chartType, useCandles, hasMore],
   );
   const chartRef = useRef<TVChartHandle>(null);
   const onCrosshair = useCallback(
@@ -185,7 +223,7 @@ export function PriceChart({
                 {formatPrice(hoverPoint.price)}
               </Text>
               <Text style={styles.rangeNote}>
-                {formatDate(hoverPoint.ts, range)}
+                {formatDate(hoverPoint.ts, interval)}
                 {hoverVolume != null ? ` · vol ${formatVolume(hoverVolume)}` : ''}
                 {hoverRsi != null ? ` · RSI ${hoverRsi.toFixed(0)}` : ''}
               </Text>
@@ -201,7 +239,7 @@ export function PriceChart({
                 {live ? <LivePulse active /> : null}
               </View>
               <Text style={styles.rangeNote}>
-                over {rangeLabel(range)} · {formatPrice(layout.minPrice)} –{' '}
+                over {CHANGE_WINDOW[interval].label} · {formatPrice(layout.minPrice)} –{' '}
                 {formatPrice(layout.maxPrice)}
               </Text>
             </>
@@ -257,7 +295,14 @@ export function PriceChart({
       <View style={[styles.chartContainer, { height: TOTAL_H }]}>
         {hasData ? (
           <>
-            <TVChart ref={chartRef} data={tvData} height={TOTAL_H} onCrosshair={onCrosshair} />
+            <TVChart ref={chartRef} data={tvData} height={TOTAL_H} onCrosshair={onCrosshair} onNeedMore={onNeedMore} />
+            {loadingMore || !hasMore ? (
+              <View style={styles.historyNote} pointerEvents="none">
+                <Text style={styles.historyNoteText}>
+                  {loadingMore ? 'Loading older history…' : 'Start of available history'}
+                </Text>
+              </View>
+            ) : null}
             <View style={styles.zoomCol} pointerEvents="box-none">
               <ZoomBtn icon="add" label="Zoom in" onPress={() => chartRef.current?.zoom(1.6)} />
               <ZoomBtn icon="remove" label="Zoom out" onPress={() => chartRef.current?.zoom(1 / 1.6)} />
@@ -285,25 +330,27 @@ export function PriceChart({
         </View>
       ) : null}
 
-      {onRangeChange ? (
+      {onIntervalChange ? (
         <View style={styles.rangeRow}>
-          {RANGES.map((r) => (
+          {INTERVALS.map((r) => (
             <Pressable
-              key={r}
-              onPress={() => onRangeChange(r)}
+              key={r.id}
+              onPress={() => onIntervalChange(r.id)}
+              accessibilityLabel={`${r.label} candles`}
               style={({ pressed }) => [
                 styles.rangePill,
-                range === r && styles.rangePillActive,
-                pressed && range !== r && styles.rangePillPressed,
+                interval === r.id && styles.rangePillActive,
+                pressed && interval !== r.id && styles.rangePillPressed,
               ]}
             >
-              <Text style={[styles.rangePillText, range === r && styles.rangePillTextActive]}>
-                {r.toUpperCase()}
+              <Text style={[styles.rangePillText, interval === r.id && styles.rangePillTextActive]}>
+                {r.label}
               </Text>
             </Pressable>
           ))}
         </View>
       ) : null}
+      <Text style={styles.hintText}>Scroll or zoom out to load older history · drag the axes to stretch</Text>
     </View>
   );
 }
@@ -341,21 +388,6 @@ function nearestByTs(arr: { ts: number; value: number }[], ts: number): number |
     }
   }
   return arr[bestIdx]!.value;
-}
-
-function rangeLabel(range: ChartRange): string {
-  switch (range) {
-    case '1d':
-      return '24 hours';
-    case '7d':
-      return '7 days';
-    case '30d':
-      return '30 days';
-    case '90d':
-      return '90 days';
-    case '1y':
-      return '1 year';
-  }
 }
 
 const styles = StyleSheet.create({
@@ -442,4 +474,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
+  historyNote: {
+    position: 'absolute',
+    top: 8,
+    left: 44,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: 'rgba(24, 24, 27, 0.85)',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  historyNoteText: { ...type.micro, color: colors.textMuted },
+  hintText: { ...type.micro, color: colors.textDim, textAlign: 'center' },
 });
