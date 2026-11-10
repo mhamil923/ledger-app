@@ -61,7 +61,12 @@ export function BudgetCategoryRow({ category, onPress }: Props) {
     barPct = funds > 0 ? Math.min(1, spent / funds) : spent > 0 ? 1 : 0;
     barColor = over ? colors.negative : barPct > 0.9 ? colors.warning : colors.accent;
     if (bill) {
-      sub = `${money(bill.amount)} ${CADENCE[bill.cadence] ?? ''}${bill.next_due_date ? ` · next due ${shortDate(bill.next_due_date)}` : ''}${spent >= bill.amount - 0.01 ? ' · paid ✓' : ''}`;
+      const mine = bill.amount * (1 - (bill.shared_share || 0));
+      const split = bill.shared_share > 0
+        ? ` · your share ${money(mine)}, ${bill.shared_with ?? 'they'} pay${bill.shared_with ? 's' : ''} ${money(bill.amount - mine)}`
+        : '';
+      const charged = refund ? 0 : spent;
+      sub = `${money(bill.amount)} ${CADENCE[bill.cadence] ?? ''}${split}${bill.next_due_date ? ` · next due ${shortDate(bill.next_due_date)}` : ''}${charged >= mine - 0.01 && charged > 0 ? ' · paid ✓' : ''}`;
     } else if (Math.abs(carryover) >= 0.005) {
       sub = `${carryover > 0 ? 'includes' : 'minus'} ${money(Math.abs(carryover))} ${carryover > 0 ? 'left over' : 'overspent'} from last month`;
     }

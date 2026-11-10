@@ -110,8 +110,11 @@ export function CategoryActionsSheet({ category, budget, onClose, onChanged, onV
             </Pressable>
           ) : null}
           {category.bill ? (
-            <Pressable style={s.chip} onPress={() => saveBudgeted(category.bill!.monthly_equivalent)}>
-              <Text style={s.chipText}>Bill amount ({formatMoney(category.bill.monthly_equivalent)}/mo)</Text>
+            <Pressable style={s.chip} onPress={() => saveBudgeted(Math.round(category.bill!.monthly_equivalent * (1 - category.bill!.shared_share) * 100) / 100)}>
+              <Text style={s.chipText}>
+                {category.bill.shared_share > 0 ? 'Your share of the bill' : 'Bill amount'} (
+                {formatMoney(category.bill.monthly_equivalent * (1 - category.bill.shared_share))}/mo)
+              </Text>
             </Pressable>
           ) : null}
           {category.activity < 0 ? (
@@ -121,6 +124,8 @@ export function CategoryActionsSheet({ category, budget, onClose, onChanged, onV
           ) : null}
         </View>
       </View>
+
+      {category.bill ? <SplitBill category={category} onSaved={() => void run(() => apiClient.getBudget(budget.month))} /> : null}
 
       <View style={s.field}>
         <Text style={s.label}>MOVE MONEY BETWEEN CATEGORIES</Text>
@@ -196,4 +201,59 @@ function Stat({ label, value, highlight }: { label: string; value: number; highl
 function monthLabel(month: string): string {
   const [y, m] = month.split('-').map(Number);
   return new Date(Date.UTC(y!, m! - 1, 1)).toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
+}
+
+/** "Someone pays me back part of this bill" — e.g. splitting rent. */
+function SplitBill({ category, onSaved }: { category: EnvelopeCategory; onSaved: () => void }) {
+  const bill = category.bill!;
+  const [share, setShare] = useState(bill.shared_share);
+  const [who, setWho] = useState(bill.shared_with ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    setShare(bill.shared_share);
+    setWho(bill.shared_with ?? '');
+  }, [bill.shared_share, bill.shared_with]);
+  const dirty = Math.abs(share - bill.shared_share) > 0.001 || (who || null) !== (bill.shared_with || null);
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiClient.updateBill(bill.id, { shared_share: share, shared_with: who.trim() || null });
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not save.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View style={s.field}>
+      <Text style={s.label}>SPLIT THIS BILL</Text>
+      <Text style={s.hint}>If someone pays you back part of this bill, the budget plans only your part and their payment counts against it.</Text>
+      <View style={[s.chipRow, { marginTop: 6 }]}>
+        {[0, 0.5, 1 / 3, 0.25].map((v) => (
+          <Pressable key={v} style={[s.chip, Math.abs(share - v) < 0.001 && { borderColor: colors.accent }]} onPress={() => setShare(v)}>
+            <Text style={[s.chipText, Math.abs(share - v) < 0.001 && { color: colors.accent }]}>
+              {v === 0 ? 'Not split' : `They pay ${Math.round(v * 100)}%`}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      {share > 0 ? (
+        <>
+          <TextInput value={who} onChangeText={setWho} placeholder="Who? (e.g. Madeline)" placeholderTextColor={colors.textDim} style={[s.input, { marginTop: 6 }]} />
+          <Text style={s.hint}>
+            You pay {formatMoney(bill.amount * (1 - share))} of {formatMoney(bill.amount)}; {who || 'they'} cover{who ? 's' : ''} {formatMoney(bill.amount * share)}.
+          </Text>
+        </>
+      ) : null}
+      {err ? <Text style={[s.hint, { color: colors.negative }]}>{err}</Text> : null}
+      {dirty ? (
+        <Pressable onPress={() => void save()} style={[s.primaryBtn, { marginTop: 6 }]}>
+          {busy ? <ActivityIndicator color={colors.bg} /> : <Text style={s.primaryText}>Save split</Text>}
+        </Pressable>
+      ) : null}
+    </View>
+  );
 }

@@ -397,8 +397,10 @@ function UnassignedCard({ data, isCurrent }: { data: EnvelopeBudget; isCurrent: 
           </Text>
           <Text style={styles.noticeDesc}>
             {over
-              ? s.income < 1 && isCurrent
-                ? "No paychecks have landed this month yet, so this is normal early in the month — it fills in as you get paid. If it's still negative after payday, lower a few planned amounts."
+              ? isCurrent
+                ? s.income < 1
+                  ? "No paychecks have landed this month yet, so this is normal early in the month — it fills in as you get paid. If it's still negative after payday, lower a few planned amounts."
+                  : `Only ${money(s.income)} has come in so far this month. Paychecks still to come will shrink this as they land — if it's still negative after your last paycheck of the month, lower a few planned amounts.`
                 : 'Lower some planned amounts (tap a category) until this reaches $0, so you only plan money you actually have.'
               : extra
                 ? 'Give it a job: add it to a category like Savings, Investing, or a bill you want to get ahead on.'

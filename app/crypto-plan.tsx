@@ -63,7 +63,8 @@ export default function CryptoPlanScreen() {
     void storage.set(COINS_KEY, next.join(','));
   };
 
-  const main = useMemo(() => (d?.positions ?? []).filter((p) => !p.dust), [d]);
+  const main = useMemo(() => (d?.positions ?? []).filter((p) => !p.dust && p.status !== 'exited'), [d]);
+  const exited = useMemo(() => (d?.positions ?? []).filter((p) => p.status === 'exited'), [d]);
   const dust = useMemo(() => (d?.positions ?? []).filter((p) => p.dust), [d]);
 
   return (
@@ -103,6 +104,8 @@ export default function CryptoPlanScreen() {
           <>
             <TotalsCard d={d} />
 
+            <BuyPlanner positions={main} />
+
             <Text style={styles.sectionTitle}>BREAK-EVEN BY COIN</Text>
             <Text style={styles.sectionHint}>
               Break-even is the price where selling everything gets back all the money you put in. Tap a coin for details.
@@ -110,6 +113,23 @@ export default function CryptoPlanScreen() {
             {main.map((p) => (
               <CoinCard key={p.code} p={p} />
             ))}
+            {exited.length ? (
+              <View style={styles.card}>
+                <Text style={styles.label}>MOSTLY SOLD (BREAK-EVEN DOESN'T APPLY)</Text>
+                {exited.map((p) => (
+                  <View key={p.code} style={styles.tableRow}>
+                    <Text style={[styles.cell, { color: colors.text, fontWeight: '600' }]}>{p.code}</Text>
+                    <Text style={[styles.cell, { flex: 3 }]}>
+                      worth {usd(p.value)} · lost about <Text style={{ color: colors.negative }}>{usd(p.net - p.value)}</Text>
+                    </Text>
+                  </View>
+                ))}
+                <Text style={styles.footnote}>
+                  You hold almost none of these anymore, so the money is already lost on the coins you sold (or they were moved to
+                  another wallet). Counted in the totals above.
+                </Text>
+              </View>
+            ) : null}
             {dust.length ? (
               <Text style={styles.footnote}>
                 Small positions under $5 (not shown): {dust.map((p) => p.code).join(', ')}
@@ -172,6 +192,145 @@ export default function CryptoPlanScreen() {
         ) : null}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// "If I put $X into this coin, where does my entry price go?"
+// ---------------------------------------------------------------------------
+
+const AMOUNTS = [250, 500, 1000, 2500];
+const DROPS = [0, -0.1, -0.2, -0.3];
+
+/** New average entry (break-even) after buying `dollars` at `atPrice`. */
+function afterBuy(p: CryptoPosition, dollars: number, atPrice: number): { coins: number; entry: number } {
+  const coins = p.qty + dollars / atPrice;
+  return { coins, entry: (Math.max(0, p.net) + dollars) / coins };
+}
+
+function BuyPlanner({ positions }: { positions: CryptoPosition[] }) {
+  const [code, setCode] = useState<string | null>(null);
+  const [amountText, setAmountText] = useState('500');
+  const [priceText, setPriceText] = useState('');
+  const [split, setSplit] = useState(false);
+  const [lowText, setLowText] = useState('');
+  const p = positions.find((x) => x.code === code) ?? positions[0];
+  useEffect(() => {
+    if (p) {
+      setPriceText('');
+      setLowText('');
+    }
+  }, [p?.code]);
+  if (!p) return null;
+
+  const amount = Number(amountText.replace(/[$,\s]/g, '')) || 0;
+  const buyPrice = Number(priceText.replace(/[$,\s]/g, '')) || p.price;
+  const low = Number(lowText.replace(/[$,\s]/g, '')) || buyPrice * 0.8;
+  // Split = 3 equal buys spread evenly from the buy price down to `low`.
+  const buys = split
+    ? [0, 0.5, 1].map((k) => ({ price: buyPrice + (low - buyPrice) * k, dollars: amount / 3 }))
+    : [{ price: buyPrice, dollars: amount }];
+  const newCoins = p.qty + buys.reduce((t, b) => t + b.dollars / b.price, 0);
+  const newEntry = (Math.max(0, p.net) + amount) / newCoins;
+  const avgBuy = amount / buys.reduce((t, b) => t + b.dollars / b.price, 0);
+  const oldEntry = p.net > 0 ? p.breakeven : null;
+  const vsNow = newEntry / p.price - 1;
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.label}>BUY CALCULATOR — WHERE DOES MY ENTRY PRICE GO?</Text>
+      <View style={styles.chips}>
+        {positions.map((x) => (
+          <Pressable key={x.code} onPress={() => setCode(x.code)} style={[styles.chip, x.code === p.code && styles.chipOn]}>
+            <Text style={[styles.chipText, x.code === p.code && styles.chipTextOn]}>{x.code}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <View style={styles.inputsRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.statLabel}>Amount to put in</Text>
+          <View style={styles.inputWrap}>
+            <Text style={styles.prefix}>$</Text>
+            <TextInput value={amountText} onChangeText={setAmountText} keyboardType="decimal-pad" style={styles.input} placeholder="500" placeholderTextColor={colors.textDim} />
+          </View>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.statLabel}>{split ? 'First buy at' : 'Buy price'}</Text>
+          <View style={styles.inputWrap}>
+            <Text style={styles.prefix}>$</Text>
+            <TextInput value={priceText} onChangeText={setPriceText} keyboardType="decimal-pad" style={styles.input} placeholder={price(p.price).slice(1)} placeholderTextColor={colors.textDim} />
+          </View>
+        </View>
+      </View>
+      <View style={styles.chips}>
+        {DROPS.map((dp) => (
+          <Pressable key={dp} onPress={() => setPriceText(dp === 0 ? '' : String(+(p.price * (1 + dp)).toPrecision(4)))} style={styles.chip}>
+            <Text style={styles.chipText}>{dp === 0 ? `Now ${price(p.price)}` : `${Math.round(dp * 100)}%`}</Text>
+          </Pressable>
+        ))}
+        <Pressable onPress={() => setSplit(!split)} style={[styles.chip, split && styles.chipOn]}>
+          <Text style={[styles.chipText, split && styles.chipTextOn]}>Split into 3 buys</Text>
+        </Pressable>
+      </View>
+      {split ? (
+        <View style={{ maxWidth: 220 }}>
+          <Text style={styles.statLabel}>Last buy at (lowest)</Text>
+          <View style={styles.inputWrap}>
+            <Text style={styles.prefix}>$</Text>
+            <TextInput value={lowText} onChangeText={setLowText} keyboardType="decimal-pad" style={styles.input} placeholder={price(buyPrice * 0.8).slice(1)} placeholderTextColor={colors.textDim} />
+          </View>
+          <Text style={styles.footnote}>
+            {usd(amount / 3)} each at {buys.map((b) => price(b.price)).join(', ')}
+          </Text>
+        </View>
+      ) : null}
+
+      {amount > 0 ? (
+        <View style={styles.result}>
+          <View style={styles.statRow}>
+            <Stat label="Entry price now" value={oldEntry ? price(oldEntry) : '—'} />
+            <Stat label="New entry price" value={price(newEntry)} color={colors.accent} />
+            <Stat label="Coins after" value={newCoins.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
+          </View>
+          <Text style={styles.body}>
+            Putting <Text style={styles.strong}>{usd(amount, false)}</Text> into {p.code}
+            {split ? ` (average buy ${price(avgBuy)})` : ` at ${price(buyPrice)}`} moves your entry from{' '}
+            {oldEntry ? price(oldEntry) : 'n/a'} to <Text style={styles.strong}>{price(newEntry)}</Text>
+            {oldEntry ? ` (${pct(newEntry / oldEntry - 1)})` : ''}. From today's {price(p.price)}, {p.code} would need{' '}
+            <Text style={{ color: vsNow > 0 ? colors.warning : colors.positive }}>{vsNow > 0 ? pct(vsNow) : 'nothing — already above'}</Text> to
+            break even{split || buyPrice !== p.price ? ` (${pct(newEntry / Math.min(...buys.map((b) => b.price)) - 1)} from your lowest buy)` : ''}.
+          </Text>
+          <Text style={styles.footnote}>
+            You'd have {usd(Math.max(0, p.net) + amount, false)} in {p.code} in total. Entry price = total money in ÷ total coins (sales already
+            subtracted).
+          </Text>
+        </View>
+      ) : null}
+
+      <Text style={[styles.label, { marginTop: spacing.sm }]}>NEW ENTRY PRICE BY AMOUNT AND BUY PRICE</Text>
+      <View style={styles.tableRow}>
+        <Text style={[styles.cell, styles.th]}>Put in</Text>
+        {DROPS.map((dp) => (
+          <Text key={dp} style={[styles.cell, styles.th, { textAlign: 'right' }]}>
+            {dp === 0 ? 'at now' : `at ${Math.round(dp * 100)}%`}
+          </Text>
+        ))}
+      </View>
+      {AMOUNTS.map((a) => (
+        <View key={a} style={styles.tableRow}>
+          <Text style={[styles.cell, { color: colors.text }]}>{usd(a, false)}</Text>
+          {DROPS.map((dp) => (
+            <Text key={dp} style={[styles.cell, { textAlign: 'right' }]}>
+              {price(afterBuy(p, a, p.price * (1 + dp)).entry)}
+            </Text>
+          ))}
+        </View>
+      ))}
+      <Text style={styles.footnote}>
+        Column prices: now {price(p.price)}, −10% {price(p.price * 0.9)}, −20% {price(p.price * 0.8)}, −30% {price(p.price * 0.7)}. Buying
+        lower pulls your entry down faster — but only if the price actually gets there.
+      </Text>
+    </View>
   );
 }
 
@@ -418,6 +577,9 @@ const styles = StyleSheet.create({
   chipTextOn: { color: colors.bg, fontWeight: '600' },
   dcaRow: { flexDirection: 'row', gap: spacing.md, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.borderSubtle, alignItems: 'center' },
   totalRow: { borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing.sm },
+  inputsRow: { flexDirection: 'row', gap: spacing.md },
+  result: { backgroundColor: colors.bgElevated, borderRadius: radius.md, padding: spacing.md, gap: spacing.sm },
+  th: { color: colors.textDim, fontSize: 11 },
   howBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   howText: { ...type.caption, color: colors.accent },
 });

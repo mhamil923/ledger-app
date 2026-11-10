@@ -713,7 +713,7 @@ export const apiClient = {
 
   getBills: () => api<{ bills: Bill[]; monthly_total: number }>('/api/bills'),
   addBill: (input: BillInput) => api<{ bill: Bill }>('/api/bills', { method: 'POST', body: input }),
-  updateBill: (id: string, input: Partial<BillInput> & { active?: boolean }) =>
+  updateBill: (id: string, input: Partial<BillInput> & { active?: boolean; shared_share?: number; shared_with?: string | null }) =>
     api<{ ok: true }>(`/api/bills/${id}`, { method: 'PATCH', body: input }),
   markBillPaid: (id: string, paid_at: string, amount?: number) =>
     api<{ ok: true }>(`/api/bills/${id}/payments`, {
@@ -917,6 +917,9 @@ export interface EnvelopeCategory extends Category {
     amount: number;
     next_due_date: string | null;
     monthly_equivalent: number;
+    /** Fraction someone else pays you back (0.5 = split rent). */
+    shared_share: number;
+    shared_with: string | null;
   } | null;
 }
 
@@ -1107,7 +1110,7 @@ export interface CryptoPosition {
   pl_pct: number | null;
   breakeven: number;
   rise_needed: number;
-  status: 'house_money' | 'above' | 'below';
+  status: 'house_money' | 'above' | 'below' | 'exited';
   fees: number;
   dust: boolean;
   add_scenarios: Array<{ add: number; breakeven: number; needs: number }>;
