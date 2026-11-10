@@ -79,13 +79,13 @@ export function CategoryActionsSheet({ category, budget, onClose, onChanged, onV
   return (
     <Sheet visible={!!category} onClose={onClose} eyebrow={category.group_name.toUpperCase()} title={category.name}>
       <View style={{ flexDirection: 'row', gap: spacing.lg }}>
-        <Stat label="Available" value={category.balance} highlight />
+        <Stat label="Left to spend" value={category.balance} highlight />
         <Stat label="Spent" value={-category.activity} />
-        <Stat label="Carried in" value={category.carryover} />
+        <Stat label="Left from last month" value={category.carryover} />
       </View>
 
       <View style={s.field}>
-        <Text style={s.label}>BUDGETED IN {monthLabel(budget.month).toUpperCase()}</Text>
+        <Text style={s.label}>PLANNED FOR {monthLabel(budget.month).toUpperCase()}</Text>
         <View style={{ flexDirection: 'row', gap: spacing.sm }}>
           <View style={[s.currencyWrap, { flex: 1 }]}>
             <Text style={s.currencyPrefix}>$</Text>
@@ -123,7 +123,7 @@ export function CategoryActionsSheet({ category, budget, onClose, onChanged, onV
       </View>
 
       <View style={s.field}>
-        <Text style={s.label}>MOVE MONEY</Text>
+        <Text style={s.label}>MOVE MONEY BETWEEN CATEGORIES</Text>
         <View style={s.chipRow}>
           {(['out', 'in'] as const).map((d) => (
             <Pressable key={d} onPress={() => setDirection(d)} style={[s.chip, direction === d && s.chipActive]}>
@@ -146,7 +146,7 @@ export function CategoryActionsSheet({ category, budget, onClose, onChanged, onV
         </View>
         <View style={[s.chipRow, { marginTop: 6 }]}>
           <Pressable onPress={() => setOther(TO_BUDGET)} style={[s.chip, other === TO_BUDGET && s.chipActive]}>
-            <Text style={[s.chipText, other === TO_BUDGET && s.chipTextActive]}>To Budget ({formatMoney(budget.to_budget)})</Text>
+            <Text style={[s.chipText, other === TO_BUDGET && s.chipTextActive]}>Unassigned money ({formatMoney(budget.to_budget)})</Text>
           </Pressable>
           {others.map((c) => (
             <Pressable key={c.id} onPress={() => setOther(c.id)} style={[s.chip, other === c.id && s.chipActive]}>

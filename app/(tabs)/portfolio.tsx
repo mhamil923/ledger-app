@@ -159,6 +159,21 @@ export default function PortfolioScreen() {
             </Section>
           ) : null}
 
+          <Pressable
+            onPress={() => router.push('/crypto-plan')}
+            style={({ pressed }) => [styles.planCard, pressed && { opacity: 0.8 }]}
+            accessibilityRole="button"
+          >
+            <View style={styles.planIcon}>
+              <Ionicons name="trending-up" size={18} color={colors.accent} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.planTitle}>Crypto break-even & DCA plan</Text>
+              <Text style={styles.planSub}>What each coin needs to get back to even, and how much to buy each week</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </Pressable>
+
           {aggregated.cryptoLines.length > 0 ? (
             <Section
               icon="logo-bitcoin"
@@ -507,6 +522,19 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
 }
 
 const styles = StyleSheet.create({
+  planCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: 'rgba(124, 140, 255, 0.08)',
+    borderColor: 'rgba(124, 140, 255, 0.3)',
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  planIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(124, 140, 255, 0.15)', alignItems: 'center', justifyContent: 'center' },
+  planTitle: { ...type.heading, color: colors.text, fontSize: 15 },
+  planSub: { ...type.caption, color: colors.textMuted, fontSize: 12, marginTop: 2 },
   root: { flex: 1, backgroundColor: colors.bg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scrollContent: {

@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { AnalysisModal } from '../../components/AnalysisModal';
 import {
@@ -65,6 +66,10 @@ export default function MarketsScreen() {
       <View style={styles.strip}>
         <FearGreedPill fg={sentimentQ.data?.fear_greed ?? null} />
         {nextBig ? <NextEventPill e={nextBig} /> : null}
+        <Pressable onPress={() => router.push('/crypto-plan')} style={[styles.pill, { justifyContent: 'center' }]}>
+          <Text style={styles.pillLabel}>MY COINS</Text>
+          <Text style={[styles.pillValue, { color: colors.accent }]}>Break-even & DCA ›</Text>
+        </Pressable>
       </View>
 
       <View style={styles.segment}>

@@ -15,7 +15,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { AddBudgetCategoryModal } from '../../components/AddBudgetCategoryModal';
-import { BudgetCategoryRow, formatMoney } from '../../components/BudgetCategoryRow';
+import { BudgetCategoryRow, BudgetColumnsHeader, formatMoney, money } from '../../components/BudgetCategoryRow';
 import { CategoryActionsSheet } from '../../components/CategoryActionsSheet';
 import { Sheet, sheetStyles } from '../../components/Sheet';
 import { apiClient, type EnvelopeBudget, type EnvelopeCategory } from '../../lib/api';
@@ -44,6 +44,8 @@ export default function BudgetScreen() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<EnvelopeCategory | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showUnused, setShowUnused] = useState(false);
+  const [showHow, setShowHow] = useState(false);
 
   const budgetQuery = useQuery<EnvelopeBudget>({
     queryKey: ['budget', month],
@@ -88,7 +90,7 @@ export default function BudgetScreen() {
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <ScreenHeader
-        eyebrow="ENVELOPES"
+        eyebrow="BUDGET"
         title="Budget"
         subtitle={displayMonth(month)}
         actions={[
@@ -147,16 +149,19 @@ export default function BudgetScreen() {
               </Pressable>
             </View>
           ) : (
-            <ToBudgetCard data={data} />
+            <>
+              <GlanceCard data={data} isCurrent={month === currentMonth()} />
+              <UnassignedCard data={data} isCurrent={month === currentMonth()} />
+            </>
           )}
 
           {data.autofilled ? (
-            <Text style={styles.autofillNote}>Last month's budget was copied forward. Adjust anything that changed.</Text>
+            <Text style={styles.autofillNote}>This month's plan was copied from last month. Tap any category to change it.</Text>
           ) : null}
 
           <View style={styles.actionRow}>
-            <ActionChip icon="copy-outline" label="Copy last month" busy={copyMutation.isPending} onPress={() => copyMutation.mutate()} />
-            <ActionChip icon="receipt-outline" label="Fund bills" busy={fundBillsMutation.isPending} onPress={() => fundBillsMutation.mutate()} />
+            <ActionChip icon="copy-outline" label="Use last month's plan" busy={copyMutation.isPending} onPress={() => copyMutation.mutate()} />
+            <ActionChip icon="receipt-outline" label="Fill in bill amounts" busy={fundBillsMutation.isPending} onPress={() => fundBillsMutation.mutate()} />
           </View>
 
           {data.summary.uncategorized_count > 0 ? (
@@ -170,26 +175,55 @@ export default function BudgetScreen() {
                   {data.summary.uncategorized_count} uncategorized · {formatMoney(data.summary.uncategorized_spent)}
                 </Text>
                 <Text style={styles.uncatDesc}>
-                  This money is gone but not in any envelope, so it's taken out of To Budget. Categorize it to see where it went.
+                  Money you spent that isn't in any category yet. Tap to sort it so the numbers below are complete.
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </Pressable>
           ) : null}
 
-          {data.groups.map((g) => (
-            <View key={g.name} style={{ gap: spacing.sm }}>
-              <View style={styles.groupHeader}>
-                <Text style={styles.groupTitle}>{g.name.toUpperCase()}</Text>
-                <Text style={styles.groupTotals}>
-                  {formatMoney(g.budgeted)} budgeted · {formatMoney(g.balance)} left
-                </Text>
+          {data.groups.map((g) => {
+            const used = g.categories.filter(isUsed);
+            if (!used.length) return null;
+            const spent = used.reduce((t, c) => t + Math.max(0, -c.activity), 0);
+            return (
+              <View key={g.name} style={{ gap: spacing.sm }}>
+                <View style={styles.groupHeader}>
+                  <Text style={styles.groupTitle}>{g.name.toUpperCase()}</Text>
+                  <Text style={styles.groupTotals}>
+                    {money(g.budgeted)} planned · {money(spent)} spent · {money(g.balance)} left
+                  </Text>
+                </View>
+                <BudgetColumnsHeader />
+                {used.map((c) => (
+                  <BudgetCategoryRow key={c.id} category={c} onPress={() => setSelected(c)} />
+                ))}
               </View>
-              {g.categories.map((c) => (
-                <BudgetCategoryRow key={c.id} category={c} onPress={() => setSelected(c)} />
-              ))}
-            </View>
-          ))}
+            );
+          })}
+
+          {(() => {
+            const unused = data.groups.flatMap((g) => g.categories.filter((c) => !isUsed(c)));
+            if (!unused.length) return null;
+            return (
+              <View style={{ gap: spacing.sm }}>
+                <Pressable onPress={() => setShowUnused(!showUnused)} style={styles.unusedToggle}>
+                  <Ionicons name={showUnused ? 'chevron-down' : 'chevron-forward'} size={14} color={colors.textMuted} />
+                  <Text style={styles.unusedText}>
+                    {unused.length} categor{unused.length === 1 ? 'y' : 'ies'} with nothing planned or spent this month
+                  </Text>
+                </Pressable>
+                {showUnused ? (
+                  <>
+                    <BudgetColumnsHeader />
+                    {unused.map((c) => (
+                      <BudgetCategoryRow key={c.id} category={c} onPress={() => setSelected(c)} />
+                    ))}
+                  </>
+                ) : null}
+              </View>
+            );
+          })()}
 
           {data.groups.length === 0 ? (
             <View style={styles.emptyCategoriesCard}>
@@ -202,19 +236,40 @@ export default function BudgetScreen() {
           ) : null}
 
           <View style={styles.groupHeader}>
-            <Text style={styles.groupTitle}>INCOME</Text>
-            <Text style={styles.groupTotals}>{formatMoney(data.summary.income)} received</Text>
+            <Text style={styles.groupTitle}>MONEY IN THIS MONTH</Text>
+            <Text style={styles.groupTotals}>{money(data.summary.income)} received</Text>
           </View>
           {data.income_categories.map((c) => (
             <View key={c.id} style={styles.incomeRow}>
               <Text style={styles.incomeName}>{c.name}</Text>
-              <Text style={styles.incomeValue}>{formatMoney(c.activity)}</Text>
+              <Text style={styles.incomeValue}>{money(c.activity)}</Text>
             </View>
           ))}
+          {data.income_categories.length === 0 ? <Text style={styles.footNote}>No paychecks or other income have landed yet this month.</Text> : null}
           {data.summary.transfers_excluded > 0 ? (
             <Text style={styles.footNote}>
-              {formatMoney(data.summary.transfers_excluded)} of card payments and transfers between your accounts was left out of both income and spending.
+              {money(data.summary.transfers_excluded)} of credit card payments and transfers between your own accounts isn't counted as income or spending — it's just money moving between your pockets.
             </Text>
+          ) : null}
+
+          <Pressable onPress={() => setShowHow(!showHow)} style={styles.unusedToggle}>
+            <Ionicons name={showHow ? 'chevron-down' : 'chevron-forward'} size={14} color={colors.accent} />
+            <Text style={[styles.unusedText, { color: colors.accent }]}>How this budget works</Text>
+          </Pressable>
+          {showHow ? (
+            <View style={styles.noticeCard}>
+              <Text style={styles.howText}>
+                <Text style={styles.howStrong}>Planned</Text> is how much you decided to spend in a category this month. Tap a category
+                to change it.{'\n\n'}
+                <Text style={styles.howStrong}>Spent</Text> is what actually left your bank and cards for that category this month.{'\n\n'}
+                <Text style={styles.howStrong}>Left</Text> is what you can still spend. Anything you don't spend rolls into next month
+                for the same category, so saving up works automatically. Red means you went over.{'\n\n'}
+                <Text style={styles.howStrong}>Yearly bills</Text> (PlayStation, annual fees) get a small amount each month so the full
+                bill is already saved when it's due — the row shows how much you've saved so far.{'\n\n'}
+                <Text style={styles.howStrong}>Unassigned money</Text> is cash you have that isn't in your plan yet. The goal is to get it
+                to $0 by giving every dollar a category (including Savings or Investing).
+              </Text>
+            </View>
           ) : null}
         </ScrollView>
       )}
@@ -254,40 +309,127 @@ export default function BudgetScreen() {
   );
 }
 
-function ToBudgetCard({ data }: { data: EnvelopeBudget }) {
+function isUsed(c: EnvelopeCategory): boolean {
+  return Math.abs(c.budgeted) >= 0.005 || Math.abs(c.activity) >= 0.005 || Math.abs(c.balance) >= 0.005;
+}
+
+function daysInMonth(month: string): number {
+  const [y, m] = month.split('-').map(Number);
+  return new Date(y!, m!, 0).getDate();
+}
+
+/** The four numbers that answer "how's my month going?" */
+const SAVINGS_GROUP = /saving|invest/i;
+
+function GlanceCard({ data, isCurrent }: { data: EnvelopeBudget; isCurrent: boolean }) {
   const s = data.summary;
-  const tb = data.to_budget;
-  const color = tb < -0.004 ? colors.negative : tb > 0.004 ? colors.positive : colors.text;
-  const parts = [
-    `${formatMoney(s.carried_in)} carried in`,
-    `+ ${formatMoney(s.income)} income`,
-    `− ${formatMoney(s.budgeted)} budgeted`,
-  ];
-  if (s.overspent_last_month > 0) parts.push(`− ${formatMoney(s.overspent_last_month)} overspent last month`);
-  if (s.uncategorized_spent > 0) parts.push(`− ${formatMoney(s.uncategorized_spent)} uncategorized`);
+  // Savings & investing aren't spending money — show them separately.
+  const spendGroups = data.groups.filter((g) => !SAVINGS_GROUP.test(g.name));
+  const saveGroups = data.groups.filter((g) => SAVINGS_GROUP.test(g.name));
+  const left = spendGroups.reduce((t, g) => t + g.balance, 0);
+  const planned = spendGroups.reduce((t, g) => t + g.budgeted, 0);
+  const spent = spendGroups.reduce((t, g) => t + g.categories.reduce((u, c) => u + Math.max(0, -c.activity), 0), 0);
+  const saving = saveGroups.reduce((t, g) => t + g.budgeted, 0);
+  const saved = saveGroups.reduce((t, g) => t + g.balance, 0);
+  const usedPct = planned > 0 ? Math.min(1, spent / planned) : 0;
+  const total = daysInMonth(data.month);
+  const day = isCurrent ? new Date().getDate() : total;
+  const monthPct = day / total;
+  const daysLeft = total - day;
+  let pace: string;
+  if (!isCurrent) pace = data.month < currentMonth() ? `Month is over — you spent ${Math.round(usedPct * 100)}% of your spending plan.` : "This month hasn't started yet.";
+  else if (planned <= 0) pace = 'No plan yet — tap a category to set how much you want to spend.';
+  else if (usedPct <= monthPct + 0.05) pace = `On track: ${Math.round(usedPct * 100)}% of your spending plan used with ${Math.round(monthPct * 100)}% of the month gone.`;
+  else pace = `Spending faster than planned: ${Math.round(usedPct * 100)}% used with ${Math.round(monthPct * 100)}% of the month gone.`;
   return (
     <View style={styles.summaryCard}>
-      <Text style={styles.summaryLabel}>TO BUDGET</Text>
-      <Text style={[styles.summaryValue, { color }]}>{formatMoney(tb)}</Text>
-      <Text style={styles.summaryHint}>
-        {tb < -0.004
-          ? 'You budgeted more than you have. Pull money back from an envelope.'
-          : tb > 0.004
-            ? 'Give every dollar a job: assign this to an envelope.'
-            : 'Every dollar has a job.'}
-      </Text>
-      <View style={styles.formulaRow}>
-        {parts.map((p) => (
-          <Text key={p} style={styles.formula}>
-            {p}
+      <Text style={styles.summaryLabel}>{isCurrent ? `THIS MONTH · ${daysLeft} DAY${daysLeft === 1 ? '' : 'S'} LEFT` : 'MONTH SUMMARY'}</Text>
+      <View style={styles.glanceGrid}>
+        <Glance label="Money in" value={s.income} color={colors.positive} hint="paychecks & other income" />
+        <Glance label="Spending plan" value={planned} hint="bills + everyday" />
+        <Glance label="Spent" value={spent} hint="so far this month" />
+        <Glance label="Left to spend" value={left} color={left < 0 ? colors.negative : colors.text} hint="before you go over" />
+      </View>
+      <View style={styles.paceBar}>
+        <View style={[styles.paceFill, { width: `${usedPct * 100}%`, backgroundColor: usedPct > monthPct + 0.05 ? colors.warning : colors.accent }]} />
+        {isCurrent ? <View style={[styles.paceMarker, { left: `${monthPct * 100}%` }]} /> : null}
+      </View>
+      <Text style={styles.summaryHint}>{pace}</Text>
+      {saveGroups.length ? (
+        <Text style={styles.savingLine}>
+          Savings & investing: {money(saving)} set aside this month · {money(saved)} saved in total
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function Glance({ label, value, color, hint }: { label: string; value: number; color?: string; hint: string }) {
+  return (
+    <View style={styles.glance}>
+      <Text style={styles.subStatLabel}>{label.toUpperCase()}</Text>
+      <Text style={[styles.glanceValue, { color: color ?? colors.text }]}>{money(value)}</Text>
+      <Text style={styles.glanceHint}>{hint}</Text>
+    </View>
+  );
+}
+
+/** "To Budget", in plain words. */
+function UnassignedCard({ data, isCurrent }: { data: EnvelopeBudget; isCurrent: boolean }) {
+  const [math, setMath] = useState(false);
+  const s = data.summary;
+  const tb = data.to_budget;
+  const have = s.carried_in + s.income;
+  const over = tb < -0.004;
+  const extra = tb > 0.004;
+  const color = over ? colors.negative : extra ? colors.positive : colors.textMuted;
+  return (
+    <View style={[styles.noticeCard, over && { borderColor: 'rgba(239, 68, 68, 0.35)' }]}>
+      <View style={styles.unassignedTop}>
+        <Ionicons name={over ? 'alert-circle' : extra ? 'add-circle' : 'checkmark-circle'} size={20} color={color} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.noticeTitle}>
+            {over
+              ? `Your plan is ${money(-tb)} more than the money you have`
+              : extra
+                ? `${money(tb)} isn't in your plan yet`
+                : 'Every dollar is in your plan ✓'}
           </Text>
-        ))}
+          <Text style={styles.noticeDesc}>
+            {over
+              ? s.income < 1 && isCurrent
+                ? "No paychecks have landed this month yet, so this is normal early in the month — it fills in as you get paid. If it's still negative after payday, lower a few planned amounts."
+                : 'Lower some planned amounts (tap a category) until this reaches $0, so you only plan money you actually have.'
+              : extra
+                ? 'Give it a job: add it to a category like Savings, Investing, or a bill you want to get ahead on.'
+                : 'Nice — all your money has a purpose.'}
+          </Text>
+        </View>
       </View>
-      <View style={styles.subGrid}>
-        <SubStat label="Income" value={s.income} color={colors.positive} />
-        <SubStat label="Spent" value={s.spent} />
-        <SubStat label="In envelopes" value={s.available_in_categories} />
-      </View>
+      <Pressable onPress={() => setMath(!math)} style={styles.unusedToggle}>
+        <Ionicons name={math ? 'chevron-down' : 'chevron-forward'} size={12} color={colors.textDim} />
+        <Text style={styles.mathToggle}>Show the math</Text>
+      </Pressable>
+      {math ? (
+        <View style={{ gap: 4 }}>
+          <MathLine label="Unspent money from before this month" value={s.carried_in} />
+          <MathLine label="+ Money in this month" value={s.income} />
+          <MathLine label="= Money you have to plan with" value={have} strong />
+          <MathLine label="− Planned this month" value={-s.budgeted} />
+          {s.overspent_last_month > 0 ? <MathLine label="− Overspending last month" value={-s.overspent_last_month} /> : null}
+          {s.uncategorized_spent > 0 ? <MathLine label="− Spending not in a category yet" value={-s.uncategorized_spent} /> : null}
+          <MathLine label={over ? '= Over-planned by' : '= Not in your plan yet'} value={tb} strong color={color} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function MathLine({ label, value, strong, color }: { label: string; value: number; strong?: boolean; color?: string }) {
+  return (
+    <View style={styles.mathLine}>
+      <Text style={[styles.mathLabel, strong && { color: colors.text, fontWeight: '600' }]}>{label}</Text>
+      <Text style={[styles.mathValue, strong && { fontWeight: '700' }, color ? { color } : null]}>{formatMoney(value)}</Text>
     </View>
   );
 }
@@ -495,6 +637,23 @@ const styles = StyleSheet.create({
   uncatTitle: { ...type.heading, color: colors.text, fontSize: 14 },
   uncatDesc: { ...type.micro, color: colors.textMuted, lineHeight: 16, marginTop: 2 },
 
+  savingLine: { ...type.caption, color: colors.textMuted, fontSize: 12, borderTopWidth: 1, borderTopColor: colors.borderSubtle, paddingTop: spacing.sm, marginTop: spacing.xs },
+  glanceGrid: { flexDirection: 'row', flexWrap: 'wrap', rowGap: spacing.md, marginTop: spacing.sm },
+  glance: { width: '50%', gap: 1 },
+  glanceValue: { ...type.title, fontSize: 24, fontVariant: ['tabular-nums' as const] },
+  glanceHint: { ...type.micro, color: colors.textDim, fontSize: 10 },
+  paceBar: { height: 8, borderRadius: 4, backgroundColor: colors.bgElevated, marginTop: spacing.md, overflow: 'visible' },
+  paceFill: { height: '100%', borderRadius: 4 },
+  paceMarker: { position: 'absolute', top: -3, width: 2, height: 14, backgroundColor: colors.text, opacity: 0.6 },
+  unassignedTop: { flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start' },
+  mathToggle: { ...type.micro, color: colors.textDim },
+  mathLine: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm },
+  mathLabel: { ...type.caption, color: colors.textMuted, fontSize: 12, flex: 1 },
+  mathValue: { ...type.caption, color: colors.textMuted, fontSize: 12, fontVariant: ['tabular-nums' as const] },
+  unusedToggle: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 },
+  unusedText: { ...type.caption, color: colors.textMuted, fontSize: 12 },
+  howText: { ...type.caption, color: colors.textMuted, lineHeight: 19 },
+  howStrong: { color: colors.text, fontWeight: '700' },
   groupHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginTop: spacing.md, gap: spacing.sm },
   groupTitle: { ...type.micro, color: colors.textMuted, letterSpacing: 0.8 },
   groupTotals: { ...type.micro, color: colors.textDim, fontVariant: ['tabular-nums' as const] },

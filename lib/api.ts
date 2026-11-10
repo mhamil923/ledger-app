@@ -586,6 +586,13 @@ export const apiClient = {
   getMarketBrief: () => api<{ brief: MarketBriefRow | null }>('/api/markets/brief'),
   generateMarketBrief: (model_tier: 'fast' | 'deep' = 'fast') =>
     api<{ brief: MarketBriefRow }>('/api/markets/brief', { method: 'POST', body: { model_tier } }),
+  getCryptoPlan: (opts: { budget?: number | null; symbols?: string[] | null; refresh?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.budget && opts.budget > 0) q.set('budget', String(opts.budget));
+    if (opts.symbols?.length) q.set('symbols', opts.symbols.join(','));
+    if (opts.refresh) q.set('refresh', '1');
+    return api<CryptoPlan>(`/api/markets/crypto-plan?${q.toString()}`);
+  },
   getChartHistory: (params: {
     symbol: string;
     asset_type: AssetType;
@@ -1082,4 +1089,59 @@ export interface MarketBriefRow {
   created_at: string;
   model: string;
   data: MarketBrief;
+}
+
+// ---------------------------------------------------------------------------
+// Crypto break-even + DCA
+// ---------------------------------------------------------------------------
+
+export interface CryptoPosition {
+  code: string;
+  qty: number;
+  price: number;
+  value: number;
+  cash_in: number;
+  cash_out: number;
+  net: number;
+  pl: number;
+  pl_pct: number | null;
+  breakeven: number;
+  rise_needed: number;
+  status: 'house_money' | 'above' | 'below';
+  fees: number;
+  dust: boolean;
+  add_scenarios: Array<{ add: number; breakeven: number; needs: number }>;
+  targets: Array<{ needs: number; add: number }>;
+  notes: string[];
+}
+
+export interface DcaCoin {
+  code: string;
+  mult: number;
+  weekly: number;
+  monthly: number;
+  signals: string[];
+  status: CryptoPosition['status'];
+  projections: Array<{ label: string; weeks: number; added: number; breakeven: number; needs: number }>;
+  down30: { breakeven: number; end_price: number; needs: number } | null;
+  up30: { breakeven: number; end_price: number; needs: number } | null;
+}
+
+export interface CryptoPlan {
+  generated_at: string;
+  positions: CryptoPosition[];
+  totals: { net: number; value: number; pl: number; pl_pct: number | null };
+  investing_envelope: number | null;
+  dca_eligible: string[];
+  dca: {
+    monthly: number;
+    budget_source: 'given' | 'investing_envelope';
+    base_weekly: number;
+    per_coin_weekly: number;
+    mood: { value: number; label: string; mult: number } | null;
+    coins: DcaCoin[];
+    week_total: number;
+    vs_normal: number;
+    scaled: Array<{ code: string; weekly: number }> | null;
+  } | null;
 }
