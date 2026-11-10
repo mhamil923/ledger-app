@@ -19,6 +19,12 @@ const NAV: NavItem[] = [
     match: (p) => p === '/' || p === '/(tabs)' || p === '/index',
   },
   {
+    href: '/(tabs)/markets',
+    label: 'Markets',
+    icon: 'globe-outline',
+    match: (p) => p.includes('markets'),
+  },
+  {
     href: '/(tabs)/portfolio',
     label: 'Portfolio',
     icon: 'pie-chart-outline',

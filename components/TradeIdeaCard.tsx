@@ -187,6 +187,13 @@ function TradePlan({
         ))}
       </View>
 
+      {idea.event_risk ? (
+        <View style={styles.eventRisk}>
+          <Ionicons name="calendar-outline" size={13} color={colors.warning} />
+          <Text style={styles.eventRiskText}>Scheduled event: {idea.event_risk}</Text>
+        </View>
+      ) : null}
+
       <Text style={styles.rationale}>{idea.rationale}</Text>
 
       {onTakeTrade ? (
@@ -456,6 +463,8 @@ const styles = StyleSheet.create({
   rowLabel: { ...type.micro, color: colors.textMuted, letterSpacing: 0.5 },
   rowValue: { ...type.caption, color: colors.text, fontVariant: ['tabular-nums' as const], fontWeight: '600' },
   rationale: { ...type.caption, color: colors.textMuted, lineHeight: 19, marginTop: 4 },
+  eventRisk: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, padding: 6, borderRadius: 6, backgroundColor: 'rgba(245,158,11,0.08)' },
+  eventRiskText: { ...type.caption, color: colors.warning, flex: 1, fontSize: 12 },
   takeTradeButton: {
     flexDirection: 'row',
     alignItems: 'center',

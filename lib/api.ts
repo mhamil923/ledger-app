@@ -204,6 +204,8 @@ export interface TradeIdea {
     avg_r: number;
     t2_rate: number;
   } | null;
+  /** Scheduled market-moving event inside this trade's entry/holding window. */
+  event_risk?: string | null;
 }
 
 export interface QuantSummary {
@@ -578,6 +580,12 @@ export const apiClient = {
     if (params.external_id) q.set('external_id', params.external_id);
     return api<ChartResponse>(`/api/chart?${q.toString()}`);
   },
+  getMarketCalendar: (days = 30) => api<{ events: MarketEvent[]; generated_at: string }>(`/api/markets/calendar?days=${days}`),
+  getMarketNews: () => api<{ items: NewsItem[] }>('/api/markets/news'),
+  getMarketSentiment: () => api<{ fear_greed: { value: number; label: string } | null }>('/api/markets/sentiment'),
+  getMarketBrief: () => api<{ brief: MarketBriefRow | null }>('/api/markets/brief'),
+  generateMarketBrief: (model_tier: 'fast' | 'deep' = 'fast') =>
+    api<{ brief: MarketBriefRow }>('/api/markets/brief', { method: 'POST', body: { model_tier } }),
   getChartHistory: (params: {
     symbol: string;
     asset_type: AssetType;
@@ -996,4 +1004,82 @@ export interface Overview {
   };
   net_worth: number;
   off_budget_accounts: Array<{ name: string; institution: string | null; type: string; balance: number }>;
+}
+
+// ---------------------------------------------------------------------------
+// Markets tab
+// ---------------------------------------------------------------------------
+
+export type MarketEventCategory = 'fed' | 'macro' | 'earnings' | 'options' | 'holiday' | 'crypto';
+
+export interface MarketEvent {
+  id: string;
+  at: string;
+  all_day: boolean;
+  title: string;
+  category: MarketEventCategory;
+  impact: 'high' | 'medium' | 'low';
+  country: string | null;
+  forecast: string | null;
+  previous: string | null;
+  symbol: string | null;
+  affects: Array<'stocks' | 'crypto'>;
+  detail: string | null;
+  source: string;
+  mine: boolean;
+}
+
+export interface NewsItem {
+  id: string;
+  headline: string;
+  summary: string;
+  source: string;
+  url: string;
+  image: string | null;
+  at: string;
+  category: 'market' | 'crypto' | 'company';
+  symbols: string[];
+}
+
+export interface BriefOpportunity {
+  candidate_id: string;
+  symbol: string;
+  asset_type: AssetType;
+  horizon: 'intraday' | 'short_term' | 'medium_term';
+  direction: 'long' | 'short';
+  setup_label: string;
+  entry_kind: 'trigger_now' | 'pullback' | 'breakout';
+  entry_zone: [number, number];
+  stop_loss: number;
+  targets: number[];
+  price: number;
+  backtest: { n: number; win_rate: number; win_rate_lower: number; avg_r: number };
+  conviction: number;
+  thesis: string;
+  catalyst: string;
+  risks: string;
+  event_risk: string | null;
+}
+
+export interface MarketBrief {
+  headline: string;
+  market_regime: 'risk_on' | 'risk_off' | 'mixed';
+  summary_markdown: string;
+  drivers: Array<{ title: string; detail: string; effect: 'bullish' | 'bearish' | 'mixed'; assets: string }>;
+  event_watch: Array<{ title: string; when: string; why_it_matters: string; playbook: string }>;
+  opportunities: BriefOpportunity[];
+  watch: Array<{ symbol: string; note: string }>;
+  avoid: Array<{ symbol: string; reason: string }>;
+  sources: Array<{ title: string; url: string }>;
+  fear_greed: { value: number; label: string } | null;
+  scanned: number;
+  measured_candidates: number;
+  notes: string[];
+}
+
+export interface MarketBriefRow {
+  id: string;
+  created_at: string;
+  model: string;
+  data: MarketBrief;
 }
