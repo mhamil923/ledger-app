@@ -59,7 +59,12 @@ export async function api<T>(
       (payload && typeof payload === 'object' && 'error' in payload && typeof (payload as { error: unknown }).error === 'string'
         ? (payload as { error: string }).error
         : null) ?? `Request failed with ${res.status}`;
-    throw new ApiError(res.status, payload, message);
+    // Show the server's explanation too ("Sync failed — SimpleFIN access denied…").
+    const detail =
+      payload && typeof payload === 'object' && typeof (payload as { detail?: unknown }).detail === 'string'
+        ? (payload as { detail: string }).detail
+        : null;
+    throw new ApiError(res.status, payload, detail ? `${message} — ${detail}` : message);
   }
 
   return payload as T;
