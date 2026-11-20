@@ -402,15 +402,16 @@ export function AnalysisModal({ visible, item, onClose }: Props) {
  * cached rows can carry either — the check needs to work for both.
  */
 function isDeepModel(model: string): boolean {
-  return model.includes('opus') || model.includes('fable');
+  // Deep tier: Fable now; older cached deep dives were Opus 4.x.
+  return model.includes('fable') || /opus-4/.test(model);
 }
 
+/** "claude-opus-5-5" → "Opus 5.5", "claude-fable-5-1" → "Fable 5.1". */
 function shortModel(model: string): string {
-  if (model.includes('haiku')) return 'Haiku 4.5';
-  if (model.includes('fable')) return 'Fable 5';
-  if (model.includes('opus')) return 'Opus 4.7';
-  if (model.includes('sonnet')) return 'Sonnet 4.6';
-  return model;
+  const m = model.match(/claude-([a-z]+)-(\d+)(?:-(\d+))?/);
+  if (!m) return model;
+  const name = m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1);
+  return m[3] && m[3].length <= 2 ? `${name} ${m[2]}.${m[3]}` : `${name} ${m[2]}`;
 }
 
 const HORIZON_OPTIONS: { value: AnalysisHorizon; label: string; sublabel: string }[] = [
